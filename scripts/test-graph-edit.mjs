@@ -12,7 +12,7 @@ try{
   const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
- const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
+ const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  assert.deepEqual(parseCoordinates('(1e-7, -2.5E+2), (+.5, 3.)',true),[{x:1e-7,y:-250},{x:.5,y:3}]);
  assert.deepEqual(parseCoordinates('x축 시간, (0,0), (2,3), 부드러운 곡선'),[{x:0,y:0},{x:2,y:3}],'natural coordinate prompts remain permissive by default');
@@ -32,6 +32,37 @@ try{
  const straightPath=curvePath(connection);
  const smoothed={...connection,curves:connection.curves.map(c=>({...c,smooth:true}))};
  const smoothPath=curvePath(smoothed);
+ // Explicit patterns override legacy booleans, while older saved graphs and
+ // presets retain the original 6/5 dashed stroke at the default line width.
+ const mainStroke=svg=>svg.match(/<path data-edit="curve:0"[^>]+\/>/)?.[0];
+ assert.equal(curveLineStyle({dashed:false}),'solid');
+ assert.equal(curveLineStyle({dashed:true}),'dashed');
+ assert.equal(lineDashArray('dashed',defaultStyle.lineWidth),'6 5');
+ assert.equal(mainStroke(renderGraph(base)).includes('stroke-dasharray'),false);
+ assert.ok(mainStroke(renderGraph({...base,curves:[{...base.curves[0],dashed:true}]})).includes('stroke-dasharray="6 5"'));
+ const patterns={solid:undefined,dashed:'6 5',dotted:'0 6','dash-dot':'10 5 0 5','dash-dot-dot':'10 5 0 5 0 5'};
+ for(const [lineStyle,pattern] of Object.entries(patterns)){
+  assert.equal(lineDashArray(lineStyle,defaultStyle.lineWidth),pattern);
+  for(const graph of [connection,smoothed])for(const width of [1,2.5,6]){
+   const styled={...graph,curves:[{...graph.curves[0],lineStyle,dashed:lineStyle==='solid'}]};
+   const snapshot=structuredClone(styled),svg=renderGraph(styled,{...defaultStyle,lineWidth:width}),stroke=mainStroke(svg);
+   assert.equal(curveLineStyle(styled.curves[0]),lineStyle,'explicit patterns override a conflicting legacy dashed value');
+   assert.equal(graphSchema.parse(styled).curves[0].lineStyle,lineStyle);
+   assert.equal(stroke.match(/stroke-dasharray="([^"]+)"/)?.[1],lineDashArray(lineStyle,width));
+   assert.ok(stroke.includes('stroke-linecap="round"'),'round caps make zero-length dash marks visible as dots');
+   assert.equal(stroke.match(/ d="([^"]+)"/)?.[1],curvePath(graph),'line styles must preserve straight and smooth geometry');
+   assert.ok(svg.includes('stroke-dasharray="5 4"'),'curve style changes must not change guide patterns');
+   assert.deepEqual(styled,snapshot,'style resolution and rendering must not mutate the graph');
+   if(pattern){
+    const values=lineDashArray(lineStyle,width).split(' ').map(Number);
+    assert.ok(values.every(Number.isFinite));
+    assert.ok(values.every((value,i)=>i%2===0?value>=0:value>width),'round dots and adjacent dashes need visible gaps at every supported width');
+   }
+  }
+ }
+ for(const invalid of ['dash',null,7])assert.equal(graphSchema.safeParse({...base,curves:[{...base.curves[0],lineStyle:invalid}]}).success,false);
+ assert.equal(graphSchema.parse(base).curves[0].lineStyle,undefined,'older graph documents remain valid without lineStyle');
+ for(const width of [0,-1,NaN,Infinity])assert.equal(lineDashArray('dash-dot',width),patterns['dash-dot'],'invalid preview widths fall back to the standard width');
  assert.equal(smoothConnectionIssue(connectionPoints),'');
  assert.ok(straightPath.includes('L')&&!straightPath.includes('C'));
  assert.ok(smoothPath.includes('C')&&!smoothPath.includes('L'));
@@ -321,5 +352,5 @@ try{
  assert.throws(()=>adjustText(fixture,{kind:'point',curve:0,index:0},'A'));
  assert.deepEqual(fixture,fixtureOriginal);
  for(const graph of [clamped,shifted,backwards,followed,followedCurve,labelMove])assert.equal(graphSchema.safeParse(graph).success,true);
- console.log('PASS: shading boundaries and clipping, immutable insertion and nearest cubic points, curve deletion references, connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
+ console.log('PASS: five line styles and legacy compatibility across widths, shading boundaries and clipping, immutable insertion and nearest cubic points, curve deletion references, connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
 }finally{await rm(temp,{recursive:true,force:true});}

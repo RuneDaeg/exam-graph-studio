@@ -1,8 +1,9 @@
 'use client';
 import {useEffect,useLayoutEffect,useMemo,useRef,useState,type PointerEvent,type KeyboardEvent} from 'react';
 import {Move,MousePointer2,Plus,X,PaintBucket} from 'lucide-react';
-import {graphLayout,graphSchema,renderGraph,smoothConnectionIssue,nearestCurvePosition,type Graph,type Style} from '@/lib/graph';
+import {graphLayout,graphSchema,renderGraph,curveLineStyle,smoothConnectionIssue,nearestCurvePosition,type Graph,type Style} from '@/lib/graph';
 import {CurveConnection} from '@/components/curve-connection';
+import {CurveLineStyle} from '@/components/curve-line-style';
 import {CurvePointInsert} from '@/components/curve-point-insert';
 import {GraphShading} from '@/components/graph-shading';
 import {typesetSvg,typesetSvgCached} from '@/lib/math-svg';
@@ -146,6 +147,7 @@ function SelectionEditor({graph,target,follow,onCommit,onInsert,onClose}:{graph:
   {(t.kind==='point'||t.kind==='label')&&<label>{t.kind==='label'?'세로 이동(px)':'y 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 y 좌표':'문자 세로 이동'} value={y} onChange={e=>setY(e.target.value)}/></label>}
   <button className="button primary" type="submit">적용</button>
  </div>{connection&&<CurveConnection points={connection.points} smooth={connection.smooth} onChange={smooth=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?{...c,smooth}:c)})}/>}
+ {connection&&<CurveLineStyle value={curveLineStyle(connection)} onChange={lineStyle=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?{...c,lineStyle,dashed:lineStyle!=='solid'}:c)})}/>}
  {connection&&curveIndex!==null&&<CurvePointInsert key={curveIndex} points={connection.points} initialSegment={t.kind==='point'?t.index:0} onInsert={segment=>onInsert(curveIndex,segment)}/>}
- {t.kind==='curve'&&<div className="curve-options">{(['dashed','dots','arrows'] as const).map(k=><label key={k}><input type="checkbox" checked={graph.curves[t.curve]?.[k]||false} onChange={e=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===t.curve?{...c,[k]:e.target.checked}:c)})}/>{({dashed:'점선',dots:'점 표시',arrows:'진행 방향'})[k]}</label>)}</div>}{t.kind==='label'&&<button type="button" className="text-button remove-label" onClick={()=>{onCommit({...graph,labels:graph.labels.filter((_,i)=>i!==t.index)});onClose();}}>문자 삭제</button>}{error&&<p className="error" role="alert">{error}</p>}</form>;
+ {t.kind==='curve'&&<div className="curve-options">{(['dots','arrows'] as const).map(k=><label key={k}><input type="checkbox" checked={graph.curves[t.curve]?.[k]||false} onChange={e=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===t.curve?{...c,[k]:e.target.checked}:c)})}/>{({dots:'점 표시',arrows:'진행 방향'})[k]}</label>)}</div>}{t.kind==='label'&&<button type="button" className="text-button remove-label" onClick={()=>{onCommit({...graph,labels:graph.labels.filter((_,i)=>i!==t.index)});onClose();}}>문자 삭제</button>}{error&&<p className="error" role="alert">{error}</p>}</form>;
 }

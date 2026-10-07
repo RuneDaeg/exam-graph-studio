@@ -2,22 +2,35 @@ import { z } from 'zod';
 const num = z.number().finite().min(-1000000).max(1000000);
 const point = z.object({x:num,y:num});
 const tick = z.object({value:num,label:z.string().max(80)});
+const lineStyle = z.enum(['solid','dashed','dotted','dash-dot','dash-dot-dot']);
 const shading = z.object({curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)});
 export const graphSchema = z.object({
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
  xMin:num,xMax:num,yMin:num,yMax:num,
  xTicks:z.array(tick).max(30),yTicks:z.array(tick).max(30),
- curves:z.array(z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean()})).max(12),
+ curves:z.array(z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean()})).max(12),
  shadings:z.array(shading).max(20).optional(),
  guides:z.array(z.object({x1:num,y1:num,x2:num,y2:num})).max(80),
  labels:z.array(z.object({x:num,y:num,text:z.string().max(120),dx:num,dy:num})).max(40),
  note:z.string().max(1000)
 }).refine(g=>g.xMax>g.xMin&&g.yMax>g.yMin,{message:'축의 최댓값은 최솟값보다 커야 합니다.'});
 export type Graph = z.infer<typeof graphSchema>;
+export type LineStyle = z.infer<typeof lineStyle>;
 export type Shading = NonNullable<Graph['shadings']>[number];
 type Curve = Graph['curves'][number];
 type Point = Curve['points'][number];
 type Segment = {from:Point;to:Point;c1?:Point;c2?:Point};
+export function curveLineStyle(curve:Pick<Curve,'lineStyle'|'dashed'>):LineStyle{
+ return curve.lineStyle??(curve.dashed?'dashed':'solid');
+}
+export function lineDashArray(style:LineStyle,width:number):string|undefined{
+ if(style==='solid')return undefined;
+ const unit=Number.isFinite(width)&&width>0?width:2.5;
+ // Zero-length dashes with round caps produce circular dots. Scaling every
+ // gap with the stroke width keeps them distinct even on heavier lines.
+ const patterns={dashed:[2.4,2],dotted:[0,2.4],'dash-dot':[4,2,0,2],'dash-dot-dot':[4,2,0,2,0,2]};
+ return patterns[style].map(value=>Number((value*unit).toFixed(4))).join(' ');
+}
 export function smoothConnectionIssue(points:Graph['curves'][number]['points']):string{
  if(points.length<3)return '매끄러운 곡선에는 점이 3개 이상 필요합니다.';
  if(points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return '좌표에 유한한 숫자를 입력해 주세요.';
@@ -208,12 +221,12 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||t.value===zx)return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
  g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||t.value===zy)return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
  for(const [ci,c] of g.curves.entries()){
-  const pts=c.points.map(p=>[X(p.x),Y(p.y)]),d=pathData(ci);
+  const pts=c.points.map(p=>[X(p.x),Y(p.y)]),d=pathData(ci),dashArray=lineDashArray(curveLineStyle(c),s.lineWidth);
   const arrowSegments=c.arrows?geometries[ci].map(segment=>{
    const p=segmentPoint(segment,.48),q=segmentPoint(segment,.56);
    return [X(p.x),Y(p.y),X(q.x),Y(q.y)];
   }):[];
-  out+=`<g clip-path="url(#${id}-clip)"><path data-edit="curve:${ci}" d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${c.dashed?'stroke-dasharray="6 5"':''}/>`;
+  out+=`<g clip-path="url(#${id}-clip)"><path data-edit="curve:${ci}" d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${dashArray?`stroke-dasharray="${dashArray}"`:''}/>`;
   if(c.dots)out+=pts.map(([x,y])=>`<circle cx="${n(x)}" cy="${n(y)}" r="${s.lineWidth*2}" fill="#151515"/>`).join('');
   if(c.arrows)for(const [x,y,xx,yy] of arrowSegments)out+=line(x,y,xx,yy,`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);
   out+='</g>';
