@@ -1,7 +1,8 @@
 'use client';
 import {useEffect,useLayoutEffect,useMemo,useRef,useState,type PointerEvent,type KeyboardEvent} from 'react';
 import {Move,MousePointer2,Plus,X} from 'lucide-react';
-import {graphLayout,graphSchema,renderGraph,type Graph,type Style} from '@/lib/graph';
+import {graphLayout,graphSchema,renderGraph,smoothConnectionIssue,type Graph,type Style} from '@/lib/graph';
+import {CurveConnection} from '@/components/curve-connection';
 import {typesetSvg,typesetSvgCached} from '@/lib/math-svg';
 import {movePoint,moveCurve,moveLabel,adjustText,type EditTarget} from '@/lib/graph-edit';
 
@@ -12,6 +13,7 @@ const keyOf=(t:EditTarget)=>t.kind==='point'?`point:${t.curve}:${t.index}`:t.kin
 const targetOf=(id:string):EditTarget=>{const [kind,a,b]=id.split(':');if(kind==='axis')return {kind,axis:a as 'x'|'y'};if(kind==='tick')return {kind,axis:a as 'x'|'y',index:Number(b)};return {kind:'label',index:Number(a)};};
 const rounded=(v:number)=>Number(v.toPrecision(12));
 const equalPoint=(a:{x:number;y:number},b:{x:number;y:number})=>a.x===b.x&&a.y===b.y;
+const hasTarget=(g:Graph,t:EditTarget)=>t.kind==='point'?Boolean(g.curves[t.curve]?.points[t.index]):t.kind==='curve'?Boolean(g.curves[t.curve]):t.kind==='label'?Boolean(g.labels[t.index]):t.kind==='tick'?Boolean(g[t.axis==='x'?'xTicks':'yTicks'][t.index]):true;
 
 export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:Graph;style:Style;disabled:boolean;onCommit:(graph:Graph)=>void;onDropImage:(file:File)=>void}){
  const [enabled,setEnabled]=useState(true),[selected,setSelected]=useState<EditTarget|null>(null),[draft,setDraft]=useState<Graph|null>(null);
@@ -32,7 +34,7 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
  useLayoutEffect(()=>{const node=content.current;if(!node)return;const observer=new ResizeObserver(()=>setScale(node.getBoundingClientRect().width/style.width||1));observer.observe(node);return()=>observer.disconnect();},[style.width]);
  function cancel(){drag.current=null;setDraft(null);setSelected(t=>t?{...t}:t);}
  useEffect(()=>{const escape=(e:globalThis.KeyboardEvent)=>{if(e.key==='Escape'){drag.current=null;setDraft(null);setSelected(t=>t?{...t}:t);}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[]);
- useEffect(()=>{drag.current=null;setDraft(null);},[graph]);
+ useEffect(()=>{drag.current=null;setDraft(null);setSelected(t=>t&&hasTarget(graph,t)?t:null);},[graph]);
  useEffect(()=>{setSelected(null);},[graph.title]);
  function svgPoint(e:{clientX:number;clientY:number}){const matrix=overlay.current?.getScreenCTM();return matrix?new DOMPoint(e.clientX,e.clientY).matrixTransform(matrix.inverse()):null;}
  function begin(e:PointerEvent<SVGElement>,target:EditTarget){
@@ -64,8 +66,10 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
  const selectedCurve=selected&&(selected.kind==='curve'||selected.kind==='point')?selected.curve:null;
  // Mounting an inspector during pointer-down can shift a sticky canvas under
  // the cursor. Keep its previous content and height until the gesture ends.
- const inspected=drag.current?drag.current.inspected:selected;
- const smoothControls=current.curves.some(c=>c.smooth&&c.points.length>2);
+ const inspectorGraph=drag.current?.graph||current;
+ const inspection=drag.current?drag.current.inspected:selected;
+ const inspected=inspection&&hasTarget(inspectorGraph,inspection)?inspection:null;
+ const smoothControls=current.curves.some(c=>c.smooth&&!smoothConnectionIssue(c.points));
  const mathErrors=typed.source===source?typed.errors:[];
  return <>
   <div className="preview-toolbar"><button className={'button '+(enabled?'edit-active':'')} aria-pressed={enabled} onClick={()=>{cancel();setEnabled(v=>!v);}} disabled={disabled}><MousePointer2 size={15}/>{enabled?'직접 편집 켜짐':'직접 편집 켜기'}</button>
@@ -73,7 +77,7 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
    <label><input type="checkbox" checked={snap} onChange={e=>setSnap(e.target.checked)}/>좌표 맞춤</label><input className="snap-step" type="number" min="0" step="any" value={step} disabled={!snap} aria-label="좌표 맞춤 간격" onChange={e=>setStep(e.target.value)}/>
    <label title="이동 전 좌표가 같은 문자와 점선 끝점만 함께 이동합니다."><input type="checkbox" checked={follow} onChange={e=>setFollow(e.target.checked)}/>연결된 문자·점선</label>
   </div>
-  <p className="preview-help">{active?(smoothControls?'곡선의 조절점을 움직이면 주변 구간도 매끄럽게 바뀝니다. 축·눈금은 클릭해서 수정 · Esc로 드래그 취소':'점·선·문자는 드래그, 축·눈금은 클릭해서 수정하세요. 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
+  <p className="preview-help">{active?(smoothControls?'점·선을 클릭하면 연결 방식을 바꿀 수 있습니다. 곡선의 조절점은 주변 구간도 매끄럽게 바꿉니다.':'점·선을 클릭해 직선 / 곡선을 선택하세요. 드래그로 이동 · 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
   <div className={'paper '+(style.transparent?'transparent-paper':'')} onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{e.preventDefault();if(!disabled&&e.dataTransfer.files[0])onDropImage(e.dataTransfer.files[0]);}}>
    <div className="graph-preview"><div ref={content} className="graph-art" dangerouslySetInnerHTML={{__html:display}}/>
     {active&&<svg ref={overlay} className="graph-edit-overlay" viewBox={`0 0 ${style.width} ${style.height}`} aria-label="그래프 직접 편집" role="group" onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={()=>{if(drag.current)cancel();}} onPointerDown={e=>{if(e.target===e.currentTarget)setSelected(null);}}>
@@ -91,19 +95,23 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
    {disabled&&<div className="canvas-loading"><Move size={24}/><span>축과 곡선의 관계를 읽고 있습니다</span></div>}
   </div>
   <div className="canvas-caption"><span>{active?'편집 손잡이는 다운로드에 포함되지 않습니다.':'흑백 · 시험지 스타일'}</span><span>{style.width} × {style.height} px</span></div>
-  {active&&inspected&&<SelectionEditor graph={drag.current?.graph||current} target={inspected} follow={follow} onCommit={onCommit} onClose={()=>setSelected(null)}/>}
+  {active&&inspected&&<SelectionEditor graph={inspectorGraph} target={inspected} follow={follow} onCommit={onCommit} onClose={()=>setSelected(null)}/>}
   {(error||mathErrors.length>0)&&<p role="alert" className="error">{error||`수식 문법을 확인해 주세요: ${mathErrors.join(', ')}`}</p>}
  </>;
 }
 
 function SelectionEditor({graph,target,follow,onCommit,onClose}:{graph:Graph;target:EditTarget;follow:boolean;onCommit:(g:Graph)=>void;onClose:()=>void}){
  const [text,setText]=useState(''),[x,setX]=useState(''),[y,setY]=useState(''),[error,setError]=useState('');
- useEffect(()=>{setError('');const t=target;if(t.kind==='point'){const p=graph.curves[t.curve]?.points[t.index];if(p){setX(String(p.x));setY(String(p.y));}}
-  if(t.kind==='label'){const l=graph.labels[t.index];if(l){setText(l.text);setX(String(l.dx));setY(String(l.dy));}}
-  if(t.kind==='axis')setText(graph[t.axis==='x'?'xLabel':'yLabel']);
-  if(t.kind==='tick'){const tick=graph[t.axis==='x'?'xTicks':'yTicks'][t.index];if(tick){setText(tick.label);setX(String(tick.value));}}
-  if(t.kind==='curve')setText(graph.curves[t.curve]?.name||'');
- },[graph,target]);
+ let savedText='',savedX='',savedY='';
+ if(target.kind==='point'){const p=graph.curves[target.curve]?.points[target.index];if(p){savedX=String(p.x);savedY=String(p.y);}}
+ if(target.kind==='label'){const l=graph.labels[target.index];if(l){savedText=l.text;savedX=String(l.dx);savedY=String(l.dy);}}
+ if(target.kind==='axis')savedText=graph[target.axis==='x'?'xLabel':'yLabel'];
+ if(target.kind==='tick'){const tick=graph[target.axis==='x'?'xTicks':'yTicks'][target.index];if(tick){savedText=tick.label;savedX=String(tick.value);}}
+ if(target.kind==='curve')savedText=graph.curves[target.curve]?.name||'';
+ // Connection and style changes must not overwrite unapplied field edits.
+ useEffect(()=>{setError('');setText(savedText);setX(savedX);setY(savedY);},[savedText,savedX,savedY,target]);
+ const curveIndex=target.kind==='curve'||target.kind==='point'?target.curve:null;
+ const connection=curveIndex===null?null:graph.curves[curveIndex];
  const t=target,title=t.kind==='point'?`점 ${t.index+1} 좌표`:t.kind==='curve'?`곡선 ${t.curve+1}`:t.kind==='label'?`문자 ${t.index+1}`:t.kind==='axis'?`${t.axis==='x'?'가로':'세로'}축 이름`:`${t.axis==='x'?'가로':'세로'}축 눈금 ${t.index+1}`;
  function apply(){try{let next=graph;
   const number=(v:string)=>{if(!v.trim()||!Number.isFinite(Number(v)))throw Error('숫자를 입력해 주세요.');return Number(v);};
@@ -112,12 +120,16 @@ function SelectionEditor({graph,target,follow,onCommit,onClose}:{graph:Graph;tar
   else if(t.kind==='tick')next=adjustText(graph,t,text,number(x));
   else if(t.kind==='axis')next=adjustText(graph,t,text);
   else next={...graph,curves:graph.curves.map((c,i)=>i===t.curve?{...c,name:text}:c)};
-  onCommit(graphSchema.parse(next));
+  onCommit(graphSchema.parse(next));setError('');
+  // Apply can clamp back to the existing value without changing saved fields.
+  if(t.kind==='point'){const p=next.curves[t.curve].points[t.index];setX(String(p.x));setY(String(p.y));}
+  if(t.kind==='label'){const l=next.labels[t.index];setX(String(l.dx));setY(String(l.dy));}
  }catch(e){setError(e instanceof Error?e.message:'입력 값을 확인해 주세요.');}}
  return <form className="preview-inspector" onSubmit={e=>{e.preventDefault();apply();}}><div className="inspector-title"><strong>{title}</strong><button type="button" className="icon-button" aria-label="선택 해제" onClick={onClose}><X size={14}/></button></div><div className="inspector-fields">
   {t.kind!=='point'&&<label className="inspector-text">{t.kind==='curve'?'선 이름':'표시할 문자'}<textarea rows={1} aria-label="선택한 문자" value={text} maxLength={t.kind==='curve'?40:t.kind==='label'?120:80} onChange={e=>setText(e.target.value)}/></label>}
   {(t.kind==='point'||t.kind==='label'||t.kind==='tick')&&<label>{t.kind==='label'?'가로 이동(px)':t.kind==='tick'?'눈금 좌표':'x 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 x 좌표':t.kind==='label'?'문자 가로 이동':'눈금 좌표'} value={x} onChange={e=>setX(e.target.value)}/></label>}
   {(t.kind==='point'||t.kind==='label')&&<label>{t.kind==='label'?'세로 이동(px)':'y 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 y 좌표':'문자 세로 이동'} value={y} onChange={e=>setY(e.target.value)}/></label>}
   <button className="button primary" type="submit">적용</button>
- </div>{t.kind==='curve'&&<div className="curve-options">{(['dashed','smooth','dots','arrows'] as const).map(k=><label key={k}><input type="checkbox" checked={graph.curves[t.curve]?.[k]||false} onChange={e=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===t.curve?{...c,[k]:e.target.checked}:c)})}/>{({dashed:'점선',smooth:'곡선 보간',dots:'점 표시',arrows:'진행 방향'})[k]}</label>)}</div>}{t.kind==='label'&&<button type="button" className="text-button remove-label" onClick={()=>{onCommit({...graph,labels:graph.labels.filter((_,i)=>i!==t.index)});onClose();}}>문자 삭제</button>}{error&&<p className="error" role="alert">{error}</p>}</form>;
+ </div>{connection&&<CurveConnection points={connection.points} smooth={connection.smooth} onChange={smooth=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?{...c,smooth}:c)})}/>}
+ {t.kind==='curve'&&<div className="curve-options">{(['dashed','dots','arrows'] as const).map(k=><label key={k}><input type="checkbox" checked={graph.curves[t.curve]?.[k]||false} onChange={e=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===t.curve?{...c,[k]:e.target.checked}:c)})}/>{({dashed:'점선',dots:'점 표시',arrows:'진행 방향'})[k]}</label>)}</div>}{t.kind==='label'&&<button type="button" className="text-button remove-label" onClick={()=>{onCommit({...graph,labels:graph.labels.filter((_,i)=>i!==t.index)});onClose();}}>문자 삭제</button>}{error&&<p className="error" role="alert">{error}</p>}</form>;
 }

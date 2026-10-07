@@ -12,6 +12,12 @@ export const graphSchema = z.object({
  note:z.string().max(1000)
 }).refine(g=>g.xMax>g.xMin&&g.yMax>g.yMin,{message:'축의 최댓값은 최솟값보다 커야 합니다.'});
 export type Graph = z.infer<typeof graphSchema>;
+export function smoothConnectionIssue(points:Graph['curves'][number]['points']):string{
+ if(points.length<3)return '매끄러운 곡선에는 점이 3개 이상 필요합니다.';
+ if(points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return '좌표에 유한한 숫자를 입력해 주세요.';
+ if(points.some((p,i)=>i>0&&p.x<=points[i-1].x))return '수직선이나 닫힌 경로는 직선 연결을 사용합니다. 곡선으로 연결하려면 점을 왼쪽부터 순서대로 배치해 주세요.';
+ return '';
+}
 export type Style = {lineWidth:number;fontSize:number;guides:boolean;arrows:boolean;transparent:boolean;width:number;height:number;font:'serif'|'sans'};
 export const defaultStyle:Style={lineWidth:2.5,fontSize:23,guides:true,arrows:true,transparent:false,width:760,height:540,font:'serif'};
 const curve=(name:string,pts:number[][],opts:Partial<Graph['curves'][number]>={}):Graph['curves'][number]=>({name,points:pts.map(([x,y])=>({x,y})),dashed:false,smooth:false,arrows:false,dots:false,...opts});
@@ -54,10 +60,26 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||t.value===zx)return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
  g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||t.value===zy)return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
  for(const [ci,c] of g.curves.entries()){const pts=c.points.map(p=>[X(p.x),Y(p.y)]);let d=pts.length?`M${n(pts[0][0])},${n(pts[0][1])}`:'';
-  for(let i=1;i<pts.length;i++){if(c.smooth&&pts.length>2){const p1=pts[i-1],p2=pts[i],h=p2[0]-p1[0];const slope=(j:number)=>(pts[j+1][1]-pts[j][1])/(pts[j+1][0]-pts[j][0]);const tangent=(j:number)=>{if(j===0)return slope(0);if(j===pts.length-1)return slope(j-1);const a=slope(j-1),b=slope(j);return a*b<=0?0:2*a*b/(a+b);};if(h>0&&pts.every((p,j)=>!j||p[0]>pts[j-1][0]))d+=` C${n(p1[0]+h/3)},${n(p1[1]+tangent(i-1)*h/3)} ${n(p2[0]-h/3)},${n(p2[1]-tangent(i)*h/3)} ${n(p2[0])},${n(p2[1])}`;else d+=` L${n(p2[0])},${n(p2[1])}`;}else d+=` L${n(pts[i][0])},${n(pts[i][1])}`;}
+  const smooth=c.smooth&&!smoothConnectionIssue(c.points)&&pts.every((p,j)=>!j||p[0]>pts[j-1][0]);
+  const arrowSegments:number[][]=[];
+  const slope=(j:number)=>(pts[j+1][1]-pts[j][1])/(pts[j+1][0]-pts[j][0]);
+  const tangent=(j:number)=>{if(j===0)return slope(0);if(j===pts.length-1)return slope(j-1);const a=slope(j-1),b=slope(j);return a*b<=0?0:2*a*b/(a+b);};
+  for(let i=1;i<pts.length;i++){
+   const p1=pts[i-1],p2=pts[i],h=p2[0]-p1[0];
+   if(smooth){
+    const c1=[p1[0]+h/3,p1[1]+tangent(i-1)*h/3],c2=[p2[0]-h/3,p2[1]-tangent(i)*h/3];
+    d+=` C${n(c1[0])},${n(c1[1])} ${n(c2[0])},${n(c2[1])} ${n(p2[0])},${n(p2[1])}`;
+    // Place direction marks along the same cubic, including its local direction.
+    const at=(t:number)=>{const u=1-t;return [0,1].map(j=>u*u*u*p1[j]+3*u*u*t*c1[j]+3*u*t*t*c2[j]+t*t*t*p2[j]);};
+    if(c.arrows)arrowSegments.push([...at(.48),...at(.56)]);
+   }else{
+    d+=` L${n(p2[0])},${n(p2[1])}`;
+    if(c.arrows)arrowSegments.push([p1[0]+h*.48,p1[1]+(p2[1]-p1[1])*.48,p1[0]+h*.56,p1[1]+(p2[1]-p1[1])*.56]);
+   }
+  }
   out+=`<g clip-path="url(#${id}-clip)"><path data-edit="curve:${ci}" d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${c.dashed?'stroke-dasharray="6 5"':''}/>`;
   if(c.dots)out+=pts.map(([x,y])=>`<circle cx="${n(x)}" cy="${n(y)}" r="${s.lineWidth*2}" fill="#151515"/>`).join('');
-  if(c.arrows)for(let i=1;i<pts.length;i++){const [x,y]=pts[i-1],[xx,yy]=pts[i];out+=line(x+(xx-x)*.48,y+(yy-y)*.48,x+(xx-x)*.56,y+(yy-y)*.56,`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);}
+  if(c.arrows)for(const [x,y,xx,yy] of arrowSegments)out+=line(x,y,xx,yy,`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);
   out+='</g>';
  }
  out+=g.labels.map((l,i)=>(l.text==='0'&&l.x===0&&l.y===0&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0)?'':text(X(l.x)+l.dx,Y(l.y)+l.dy,l.text,'middle',s.fontSize,`label:${i}`)).join('');return out+'</g></svg>';

@@ -12,10 +12,63 @@ try{
   const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
- const {presets,graphSchema,renderGraph}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
+ const {presets,graphSchema,renderGraph,graphLayout,smoothConnectionIssue}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const {movePoint,moveCurve,moveLabel,adjustText}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  const base=structuredClone(presets[0].graph);
  const original=structuredClone(base);
+ // Changing connection mode changes only the rendered connection, not the
+ // observations, symbols, or the point order used for scientific paths.
+ const connectionPoints=[{x:0,y:0},{x:2,y:3},{x:4,y:1}];
+ const connection={...base,curves:[{...base.curves[0],points:connectionPoints,smooth:false}]};
+ const connectionOriginal=structuredClone(connection);
+ const curvePath=g=>renderGraph(g).match(/data-edit="curve:0" d="([^"]+)"/)?.[1];
+ const straightPath=curvePath(connection);
+ const smoothed={...connection,curves:connection.curves.map(c=>({...c,smooth:true}))};
+ const smoothPath=curvePath(smoothed);
+ assert.equal(smoothConnectionIssue(connectionPoints),'');
+ assert.ok(straightPath.includes('L')&&!straightPath.includes('C'));
+ assert.ok(smoothPath.includes('C')&&!smoothPath.includes('L'));
+ assert.deepEqual(smoothed.curves[0].points,connectionOriginal.curves[0].points);
+ assert.deepEqual(connection,connectionOriginal,'connection rendering must not mutate source data');
+ assert.equal(curvePath({...smoothed,curves:smoothed.curves.map(c=>({...c,smooth:false}))}),straightPath,'switching back must restore the same straight path');
+ const curveArrows=g=>{
+  const group=renderGraph(g).match(/<g clip-path="[^"]+"><path data-edit="curve:0"[\s\S]*?<\/g>/)?.[0]||'';
+  return [...group.matchAll(/<line x1="([^"]+)" y1="([^"]+)" x2="([^"]+)" y2="([^"]+)"/g)].map(m=>m.slice(1).map(Number));
+ };
+ const arrowed={...smoothed,curves:smoothed.curves.map(c=>({...c,arrows:true}))};
+ const smoothArrows=curveArrows(arrowed);
+ const straightArrows=curveArrows({...arrowed,curves:arrowed.curves.map(c=>({...c,smooth:false}))});
+ assert.equal(smoothArrows.length,connectionPoints.length-1);
+ assert.notEqual(smoothArrows[0][1],straightArrows[0][1],'smooth direction arrows must follow the curved segment, not its chord');
+ const commands=curvePath(arrowed).match(/[MC][^MC]*/g);
+ let previous=commands[0].slice(1).split(',').map(Number);
+ for(const [index,command] of commands.slice(1).entries()){
+  const [cx1,cy1,cx2,cy2,x,y]=command.slice(1).trim().split(/[ ,]+/).map(Number);
+  const at=t=>{const u=1-t;return [
+   u**3*previous[0]+3*u*u*t*cx1+3*u*t*t*cx2+t**3*x,
+   u**3*previous[1]+3*u*u*t*cy1+3*u*t*t*cy2+t**3*y,
+  ];};
+  const expected=[...at(.48),...at(.56)],actual=smoothArrows[index];
+  expected.forEach((value,j)=>assert.ok(Math.abs(actual[j]-value)<.02,'arrow endpoints must lie on the rendered cubic'));
+  assert.ok(actual[0]>=previous[0]&&actual[2]<=x,'smooth arrows stay inside the segment');
+  previous=[x,y];
+ }
+ for(const points of [[],connectionPoints.slice(0,1),connectionPoints.slice(0,2)])assert.match(smoothConnectionIssue(points),/3개/);
+ for(const points of [
+  [{x:0,y:0},{x:0,y:2},{x:1,y:3}],
+  [...connectionPoints].reverse(),
+  [...connectionPoints,connectionPoints[0]],
+ ]){
+  const snapshot=structuredClone(points);
+  assert.match(smoothConnectionIssue(points),/왼쪽부터/);
+  assert.deepEqual(points,snapshot,'eligibility must not reorder a path');
+  const fallback={...connection,curves:[{...connection.curves[0],points,smooth:true}]};
+  assert.equal(curvePath(fallback),curvePath({...fallback,curves:[{...fallback.curves[0],smooth:false}]}),'unsupported paths retain their original straight connections');
+ }
+ for(const value of [NaN,Infinity,-Infinity]){
+  assert.match(smoothConnectionIssue([{x:0,y:0},{x:1,y:value},{x:2,y:0}]),/숫자/);
+  assert.match(smoothConnectionIssue([{x:0,y:0},{x:value,y:1},{x:2,y:0}]),/숫자/);
+ }
  const clamped=movePoint(base,0,1,100,-100);
  assert.deepEqual(clamped.curves[0].points[1],{x:base.xMax,y:base.yMin});
  assert.deepEqual(clamped.guides,base.guides,'following is opt-in');
@@ -34,6 +87,11 @@ try{
 
  const pv=structuredClone(presets.find(p=>p.id==='pv').graph);
  const pvOriginal=structuredClone(pv);
+ const pvLayout=graphLayout(pv),pvPoints=pv.curves[0].points.map(p=>[pvLayout.X(p.x),pvLayout.Y(p.y)]);
+ assert.deepEqual(curveArrows(pv),pvPoints.slice(1).map(([x,y],i)=>{
+  const [previousX,previousY]=pvPoints[i];
+  return [previousX+(x-previousX)*.48,previousY+(y-previousY)*.48,previousX+(x-previousX)*.56,previousY+(y-previousY)*.56].map(v=>Math.round(v*100)/100);
+ }),'straight closed-path arrows must retain their exact coordinates');
  for(const index of [0,pv.curves[0].points.length-1]){
   const next=movePoint(pv,0,index,1.2,1.3);
   assert.deepEqual(next.curves[0].points[0],{x:1.2,y:1.3});
@@ -154,5 +212,5 @@ try{
  assert.throws(()=>adjustText(fixture,{kind:'point',curve:0,index:0},'A'));
  assert.deepEqual(fixture,fixtureOriginal);
  for(const graph of [clamped,shifted,backwards,followed,followedCurve,labelMove])assert.equal(graphSchema.safeParse(graph).success,true);
- console.log('PASS: bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
+ console.log('PASS: connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
 }finally{await rm(temp,{recursive:true,force:true});}
