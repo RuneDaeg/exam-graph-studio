@@ -12,7 +12,7 @@ try{
   const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
- const {presets,graphSchema}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
+ const {presets,graphSchema,renderGraph}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const {movePoint,moveCurve,moveLabel,adjustText}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  const base=structuredClone(presets[0].graph);
  const original=structuredClone(base);
@@ -40,6 +40,73 @@ try{
   assert.deepEqual(next.curves[0].points.at(-1),{x:1.2,y:1.3});
  }
  assert.deepEqual(pv,pvOriginal);
+
+ const distribution=structuredClone(presets.find(p=>p.id==='distribution').graph);
+ const distributionOriginal=structuredClone(distribution);
+ const ordered=curve=>curve.points.every((p,i)=>i===0||p.x>curve.points[i-1].x);
+ function smoothPathsStayWithinKnots(graph){
+  const svg=renderGraph(graph);
+  for(const [ci,curve] of graph.curves.entries()){
+   const d=svg.match(new RegExp(`data-edit="curve:${ci}" d="([^"]+)"`))?.[1];
+   assert.ok(d&&!d.includes('L'),'smooth ordered curves must export as cubic paths');
+   const commands=d.match(/[MC][^MC]*/g);
+   assert.equal(commands.length,curve.points.length);
+   let previous=commands[0].slice(1).split(',').map(Number);
+   for(const command of commands.slice(1)){
+    const [cx1,cy1,cx2,cy2,x,y]=command.slice(1).trim().split(/[ ,]+/).map(Number);
+    for(let i=0;i<=20;i++){
+     const t=i/20,u=1-t;
+     const xx=u**3*previous[0]+3*u*u*t*cx1+3*u*t*t*cx2+t**3*x;
+     const yy=u**3*previous[1]+3*u*u*t*cy1+3*u*t*t*cy2+t**3*y;
+     assert.ok(Number.isFinite(xx)&&Number.isFinite(yy));
+     // SVG coordinates are rounded to 0.01 px by the renderer.
+     assert.ok(xx>=previous[0]-.02&&xx<=x+.02,'cubic x must stay ordered');
+     assert.ok(yy>=Math.min(previous[1],y)-.02&&yy<=Math.max(previous[1],y)+.02,'cubic must not overshoot adjacent y values');
+    }
+    previous=[x,y];
+   }
+  }
+ }
+ for(const [ci,curve] of distribution.curves.entries()){
+  assert.ok(curve.smooth&&curve.points.length<=16,'distribution should expose sparse smooth control knots');
+  assert.ok(ordered(curve));
+  for(const [index,p] of curve.points.entries()){
+   assert.deepEqual(movePoint(distribution,ci,index,p.x,p.y),distribution,'no-op must preserve exact control coordinates');
+   for(const x of [-1e6,1e6]){
+    const next=movePoint(distribution,ci,index,x,p.y);
+    assert.ok(ordered(next.curves[ci]),'dragging past a neighbor must not cross it');
+    assert.equal(next.curves[ci].points.length,curve.points.length,'editing must retain stable knot indices');
+    assert.ok(next.curves[ci].points[index].x>=next.xMin&&next.curves[ci].points[index].x<=next.xMax);
+    smoothPathsStayWithinKnots(next);
+   }
+  }
+ }
+ let repeated=distribution;
+ for(let i=0;i<80;i++){
+  const index=i%repeated.curves[0].points.length;
+  repeated=movePoint(repeated,0,index,i%2?1e6:-1e6,i%3?1e6:-1e6);
+  assert.ok(repeated.curves.every(ordered),'repeated edits must preserve x order');
+ }
+ smoothPathsStayWithinKnots(repeated);
+ assert.deepEqual(distribution,distributionOriginal,'smooth edits must not mutate source knots');
+
+ for(const [offset,scale] of [[0,1e-8],[999999,1e-8]]){
+  const tiny={...distribution,xMin:offset+distribution.xMin*scale,xMax:offset+distribution.xMax*scale,yMin:0,yMax:1e-7,
+   curves:distribution.curves.map(c=>({...c,points:c.points.map(p=>({x:offset+p.x*scale,y:p.y*1e-8}))}))};
+  const p=tiny.curves[0].points[2];
+  assert.deepEqual(movePoint(tiny,0,2,p.x,p.y),tiny,'small or translated no-op must preserve coordinates');
+  const next=movePoint(tiny,0,2,tiny.xMax,5.1e-8);
+  assert.ok(ordered(next.curves[0]),'spacing must scale with tiny coordinate ranges');
+  assert.equal(next.curves[0].points[2].y,5.1e-8);
+  smoothPathsStayWithinKnots(next);
+ }
+ const tight={...distribution,curves:[{...distribution.curves[0],points:[{x:0,y:0},{x:.001,y:.2},{x:.002,y:.5},{x:1,y:0}]}]};
+ assert.deepEqual(movePoint(tight,0,1,.001,.2),tight,'do not expand existing tight spacing');
+ assert.equal(movePoint(tight,0,1,1,.3).curves[0].points[1].x,.001,'tight knots must not become even closer');
+ const smoothPv={...pv,curves:pv.curves.map(c=>({...c,smooth:true}))};
+ assert.deepEqual(movePoint(smoothPv,0,0,1.2,1.3).curves[0].points,movePoint(pv,0,0,1.2,1.3).curves[0].points,'unordered smooth closed curves retain normal point editing');
+ const backwardsSmooth={...tight,curves:[{...tight.curves[0],points:[{x:1,y:0},{x:.5,y:1},{x:0,y:0}]}]};
+ assert.deepEqual(movePoint(backwardsSmooth,0,1,2,.8).curves[0].points[1],{x:2,y:.8},'nonordered smooth curves retain normal point editing');
 
  const fixture={...base,xMax:10,yMax:10,
   curves:[{...base.curves[0],points:[{x:2,y:3},{x:4,y:5}]}],
@@ -87,5 +154,5 @@ try{
  assert.throws(()=>adjustText(fixture,{kind:'point',curve:0,index:0},'A'));
  assert.deepEqual(fixture,fixtureOriginal);
  for(const graph of [clamped,shifted,backwards,followed,followedCurve,labelMove])assert.equal(graphSchema.safeParse(graph).success,true);
- console.log('PASS: bounds, negative ranges, closed loops, optional follow, guide projections, text validation, immutable edits');
+ console.log('PASS: bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
 }finally{await rm(temp,{recursive:true,force:true});}

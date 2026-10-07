@@ -7,7 +7,7 @@ import {movePoint,moveCurve,moveLabel,adjustText,type EditTarget} from '@/lib/gr
 
 type Box={id:string;x:number;y:number;width:number;height:number};
 type Path={index:number;d:string};
-type Drag={target:EditTarget;start:{x:number;y:number};graph:Graph;next:Graph;pointer:number;moved:boolean;box?:Box};
+type Drag={target:EditTarget;inspected:EditTarget|null;start:{x:number;y:number};graph:Graph;next:Graph;pointer:number;moved:boolean;box?:Box};
 const keyOf=(t:EditTarget)=>t.kind==='point'?`point:${t.curve}:${t.index}`:t.kind==='curve'?`curve:${t.curve}`:t.kind==='axis'?`axis:${t.axis}`:t.kind==='tick'?`tick:${t.axis}:${t.index}`:`label:${t.index}`;
 const targetOf=(id:string):EditTarget=>{const [kind,a,b]=id.split(':');if(kind==='axis')return {kind,axis:a as 'x'|'y'};if(kind==='tick')return {kind,axis:a as 'x'|'y',index:Number(b)};return {kind:'label',index:Number(a)};};
 const rounded=(v:number)=>Number(v.toPrecision(12));
@@ -36,10 +36,10 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
  useEffect(()=>{setSelected(null);},[graph.title]);
  function svgPoint(e:{clientX:number;clientY:number}){const matrix=overlay.current?.getScreenCTM();return matrix?new DOMPoint(e.clientX,e.clientY).matrixTransform(matrix.inverse()):null;}
  function begin(e:PointerEvent<SVGElement>,target:EditTarget){
-  if(disabled||!enabled||e.button!==0)return;e.preventDefault();e.stopPropagation();e.currentTarget.focus();setSelected(target);setError('');
+  if(disabled||!enabled||e.button!==0)return;e.preventDefault();e.stopPropagation();e.currentTarget.focus({preventScroll:true});setSelected(target);setError('');
   if(target.kind==='axis'||target.kind==='tick')return;
   const p=svgPoint(e);if(!p)return;overlay.current?.setPointerCapture(e.pointerId);
-  drag.current={target,start:{x:p.x,y:p.y},graph,next:graph,pointer:e.pointerId,moved:false,box:target.kind==='label'?boxes.find(b=>b.id===keyOf(target)):undefined};
+  drag.current={target,inspected:selected,start:{x:p.x,y:p.y},graph,next:graph,pointer:e.pointerId,moved:false,box:target.kind==='label'?boxes.find(b=>b.id===keyOf(target)):undefined};
  }
  function quantize(v:number){const n=Number(step);return rounded(snap&&Number.isFinite(n)&&n>0?Math.round(v/n)*n:v);}
  function move(e:PointerEvent<SVGSVGElement>){
@@ -53,7 +53,7 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
    d.next=next;setDraft(next);
   }catch(e){setError(e instanceof Error?e.message:'이동할 수 없습니다.');}
  }
- function finish(e:PointerEvent<SVGSVGElement>){const d=drag.current;if(!d||d.pointer!==e.pointerId)return;drag.current=null;setDraft(null);if(overlay.current?.hasPointerCapture(e.pointerId))overlay.current.releasePointerCapture(e.pointerId);if(d.moved&&JSON.stringify(d.graph)!==JSON.stringify(d.next)){onCommit(d.next);setSelected(d.target);}}
+ function finish(e:PointerEvent<SVGSVGElement>){const d=drag.current;if(!d||d.pointer!==e.pointerId)return;drag.current=null;setDraft(null);setSelected({...d.target});if(overlay.current?.hasPointerCapture(e.pointerId))overlay.current.releasePointerCapture(e.pointerId);if(d.moved&&JSON.stringify(d.graph)!==JSON.stringify(d.next))onCommit(d.next);}
  function nudge(e:KeyboardEvent<SVGElement>,t:EditTarget){
   if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)||t.kind==='axis'||t.kind==='tick')return;
   e.preventDefault();const factor=e.shiftKey?10:1,x=(e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0)*factor,y=(e.key==='ArrowUp'?1:e.key==='ArrowDown'?-1:0)*factor;
@@ -62,6 +62,10 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
  }
  const active=enabled&&!disabled;
  const selectedCurve=selected&&(selected.kind==='curve'||selected.kind==='point')?selected.curve:null;
+ // Mounting an inspector during pointer-down can shift a sticky canvas under
+ // the cursor. Keep its previous content and height until the gesture ends.
+ const inspected=drag.current?drag.current.inspected:selected;
+ const smoothControls=current.curves.some(c=>c.smooth&&c.points.length>2);
  const mathErrors=typed.source===source?typed.errors:[];
  return <>
   <div className="preview-toolbar"><button className={'button '+(enabled?'edit-active':'')} aria-pressed={enabled} onClick={()=>{cancel();setEnabled(v=>!v);}} disabled={disabled}><MousePointer2 size={15}/>{enabled?'직접 편집 켜짐':'직접 편집 켜기'}</button>
@@ -69,7 +73,7 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
    <label><input type="checkbox" checked={snap} onChange={e=>setSnap(e.target.checked)}/>좌표 맞춤</label><input className="snap-step" type="number" min="0" step="any" value={step} disabled={!snap} aria-label="좌표 맞춤 간격" onChange={e=>setStep(e.target.value)}/>
    <label title="이동 전 좌표가 같은 문자와 점선 끝점만 함께 이동합니다."><input type="checkbox" checked={follow} onChange={e=>setFollow(e.target.checked)}/>연결된 문자·점선</label>
   </div>
-  <p className="preview-help">{active?'점·선·문자는 드래그, 축·눈금은 클릭해서 수정하세요. 방향키로 미세 이동 · Esc로 드래그 취소':'편집 표시를 숨긴 미리보기입니다.'}</p>
+  <p className="preview-help">{active?(smoothControls?'곡선의 조절점을 움직이면 주변 구간도 매끄럽게 바뀝니다. 축·눈금은 클릭해서 수정 · Esc로 드래그 취소':'점·선·문자는 드래그, 축·눈금은 클릭해서 수정하세요. 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
   <div className={'paper '+(style.transparent?'transparent-paper':'')} onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{e.preventDefault();if(!disabled&&e.dataTransfer.files[0])onDropImage(e.dataTransfer.files[0]);}}>
    <div className="graph-preview"><div ref={content} className="graph-art" dangerouslySetInnerHTML={{__html:display}}/>
     {active&&<svg ref={overlay} className="graph-edit-overlay" viewBox={`0 0 ${style.width} ${style.height}`} aria-label="그래프 직접 편집" role="group" onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={()=>{if(drag.current)cancel();}} onPointerDown={e=>{if(e.target===e.currentTarget)setSelected(null);}}>
@@ -87,7 +91,7 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
    {disabled&&<div className="canvas-loading"><Move size={24}/><span>축과 곡선의 관계를 읽고 있습니다</span></div>}
   </div>
   <div className="canvas-caption"><span>{active?'편집 손잡이는 다운로드에 포함되지 않습니다.':'흑백 · 시험지 스타일'}</span><span>{style.width} × {style.height} px</span></div>
-  {active&&selected&&<SelectionEditor graph={current} target={selected} follow={follow} onCommit={onCommit} onClose={()=>setSelected(null)}/>}
+  {active&&inspected&&<SelectionEditor graph={drag.current?.graph||current} target={inspected} follow={follow} onCommit={onCommit} onClose={()=>setSelected(null)}/>}
   {(error||mathErrors.length>0)&&<p role="alert" className="error">{error||`수식 문법을 확인해 주세요: ${mathErrors.join(', ')}`}</p>}
  </>;
 }

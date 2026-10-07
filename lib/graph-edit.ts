@@ -43,8 +43,26 @@ function followAnchors(graph:Graph,movements:Movement[]):Graph{
 export function movePoint(graph:Graph,curve:number,index:number,x:number,y:number,follow=false):Graph{
  finite(x,y);
  const source=item(graph.curves,curve),point=item(source.points,index);
- const next={x:clamp(x,graph.xMin,graph.xMax),y:clamp(y,graph.yMin,graph.yMax)};
  const last=source.points.length-1;
+ let minX=graph.xMin,maxX=graph.xMax;
+ if(source.smooth&&last>1&&point.x>=minX&&point.x<=maxX&&source.points.every((p,i)=>i===0||p.x>source.points[i-1].x)){
+  // Sparse smooth knots need room for their neighboring cubic segments. A gap
+  // relative to the curve's span prevents narrow spikes at any unit scale.
+  // Preserve tighter existing spacing (and a no-op edit); do not force a
+  // resampling or change vertical / closed paths, whose x values are unordered.
+  const gap=Math.min(maxX-minX,source.points[last].x-source.points[0].x)*.025;
+  if(index>0){
+   const previous=source.points[index-1].x;
+   const bound=previous+Math.min(gap,point.x-previous);
+   minX=Math.max(minX,bound>previous?Math.min(point.x,bound):point.x);
+  }
+  if(index<last){
+   const following=source.points[index+1].x;
+   const bound=following-Math.min(gap,following-point.x);
+   maxX=Math.min(maxX,bound<following?Math.max(point.x,bound):point.x);
+  }
+ }
+ const next={x:clamp(x,minX,maxX),y:clamp(y,graph.yMin,graph.yMax)};
  const closed=last>0&&same(source.points[0],source.points[last]);
  const points=source.points.map((p,i)=>i===index||(closed&&(index===0||index===last)&&(i===0||i===last))?next:p);
  let result={...graph,curves:graph.curves.map((c,i)=>i===curve?{...c,points}:c)};
