@@ -15,7 +15,8 @@
     "build:pages": "vite build --config vite.pages.config.ts",
     "preview:pages": "vite preview --config vite.pages.config.ts --host 127.0.0.1",
     "test:byok": "node scripts/test-byok.mjs",
-    "test:graph-edit": "node scripts/test-graph-edit.mjs"
+    "test:graph-edit": "node scripts/test-graph-edit.mjs",
+    "test:exam-library": "node scripts/test-exam-library.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
