@@ -30,8 +30,8 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
   setPaths(items.filter(el=>el.dataset.edit?.startsWith('curve:')).map(el=>({index:Number(el.dataset.edit!.split(':')[1]),d:el.getAttribute('d')||''})));
  },[display]);
  useLayoutEffect(()=>{const node=content.current;if(!node)return;const observer=new ResizeObserver(()=>setScale(node.getBoundingClientRect().width/style.width||1));observer.observe(node);return()=>observer.disconnect();},[style.width]);
- function cancel(){drag.current=null;setDraft(null);}
- useEffect(()=>{const escape=(e:globalThis.KeyboardEvent)=>{if(e.key==='Escape'){drag.current=null;setDraft(null);}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[]);
+ function cancel(){drag.current=null;setDraft(null);setSelected(t=>t?{...t}:t);}
+ useEffect(()=>{const escape=(e:globalThis.KeyboardEvent)=>{if(e.key==='Escape'){drag.current=null;setDraft(null);setSelected(t=>t?{...t}:t);}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[]);
  useEffect(()=>{drag.current=null;setDraft(null);},[graph]);
  useEffect(()=>{setSelected(null);},[graph.title]);
  function svgPoint(e:{clientX:number;clientY:number}){const matrix=overlay.current?.getScreenCTM();return matrix?new DOMPoint(e.clientX,e.clientY).matrixTransform(matrix.inverse()):null;}
