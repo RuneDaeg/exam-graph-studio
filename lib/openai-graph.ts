@@ -24,7 +24,7 @@ export async function generateOpenAIGraph(input:GraphInput,apiKey:string,signal:
    credentials:'omit',referrerPolicy:'no-referrer',cache:'no-store',redirect:'error',signal,
    body:JSON.stringify({model:'gpt-5.4-mini',instructions,input:[{role:'user',content}],store:false,max_output_tokens:14000,text:{format:{type:'json_schema',name:'exam_graph',strict:true,schema}}}),
   });
- }catch{throw Error(signal.aborted?'생성을 취소했습니다.':'OpenAI에 연결하지 못했습니다. 네트워크 연결과 브라우저 확장 프로그램을 확인해 주세요.');}
+ }catch{throw Error(signal.aborted?'생성을 취소했습니다.':'OpenAI에 연결하지 못했습니다. API 키와 프로젝트 권한, API 결제 및 네트워크 설정을 확인해 주세요.');}
  if(!result.ok){
   const data=await result.json().catch(()=>({})) as {error?:{code?:string}};
   const code=data.error?.code;
