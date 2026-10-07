@@ -12,8 +12,15 @@ try{
   const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
- const {presets,graphSchema,renderGraph,graphLayout,smoothConnectionIssue}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
- const {movePoint,moveCurve,moveLabel,adjustText}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
+ const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
+ const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
+ assert.deepEqual(parseCoordinates('(1e-7, -2.5E+2), (+.5, 3.)',true),[{x:1e-7,y:-250},{x:.5,y:3}]);
+ assert.deepEqual(parseCoordinates('x축 시간, (0,0), (2,3), 부드러운 곡선'),[{x:0,y:0},{x:2,y:3}],'natural coordinate prompts remain permissive by default');
+ assert.throws(()=>parseCoordinates('(0,0), (2,3), (4,',true),/좌표 형식/);
+ assert.throws(()=>parseCoordinates('(0,0), (2,3) 잘못된 입력',true),/좌표 형식/);
+ assert.throws(()=>parseCoordinates('(0,0), (1e309,3)',true),/좌표는/);
+ assert.throws(()=>parseCoordinates('(0,0)',true),/두 개/);
+ assert.throws(()=>parseCoordinates(Array.from({length:501},(_,x)=>`(${x},0)`).join(', '),true),/500개/);
  const base=structuredClone(presets[0].graph);
  const original=structuredClone(base);
  // Changing connection mode changes only the rendered connection, not the
@@ -69,6 +76,93 @@ try{
   assert.match(smoothConnectionIssue([{x:0,y:0},{x:1,y:value},{x:2,y:0}]),/숫자/);
   assert.match(smoothConnectionIssue([{x:0,y:0},{x:value,y:1},{x:2,y:0}]),/숫자/);
  }
+ // Intermediate points come from the rendered geometry, including curved,
+ // vertical and closing segments. Existing observations retain their order.
+ const straightInsert=insertCurvePoint(connection,0,0,.5);
+ assert.equal(straightInsert.index,1);
+ assert.deepEqual(straightInsert.graph.curves[0].points,[{x:0,y:0},{x:1,y:1.5},{x:2,y:3},{x:4,y:1}]);
+ assert.deepEqual(connection,connectionOriginal);
+ const onCubic=pointOnCurve(smoothed.curves[0],0,.5);
+ assert.deepEqual(onCubic,{x:1,y:1.875});
+ const smoothInsert=insertCurvePoint(smoothed,0,0,.5);
+ assert.deepEqual(smoothInsert.graph.curves[0].points[1],onCubic,'inserted points must lie on the old cubic, not its chord');
+ assert.deepEqual(smoothInsert.graph.curves[0].points.filter((_,i)=>i!==1),smoothed.curves[0].points);
+ assert.equal(smoothInsert.graph.curves[0].smooth,true);
+ const straightNearest=nearestCurvePosition(connection.curves[0],{x:1,y:2},10,100);
+ const expectedT=(1*10*20+2*100*300)/(20**2+300**2);
+ assert.ok(Math.abs(straightNearest.t-expectedT)<1e-12,'nearest-point projection must use screen proportions');
+ for(const t of [.00001,.002,.4,.5,.998,.99999]){
+  const point=pointOnCurve(smoothed.curves[0],0,t);
+  const nearest=nearestCurvePosition(smoothed.curves[0],point,170,240);
+  assert.equal(nearest.segment,0);
+  assert.ok(Math.abs(nearest.t-t)<1e-8,'nearest cubic projection must find interior minima next to endpoints');
+  assert.ok(nearest.distance<1e-6);
+ }
+ // Compare several off-curve projections against a dense brute-force oracle.
+ for(const point of [{x:-.2,y:.1},{x:.08,y:.4},{x:1.2,y:2.9},{x:2.4,y:1.5},{x:3.98,y:.99}]){
+  const nearest=nearestCurvePosition(smoothed.curves[0],point,121,79);
+  let sampled=Infinity;
+  for(let segment=0;segment<2;segment++)for(let i=0;i<=1500;i++){
+   const p=pointOnCurve(smoothed.curves[0],segment,i/1500);
+   sampled=Math.min(sampled,Math.hypot((p.x-point.x)*121,(p.y-point.y)*79));
+  }
+  assert.ok(nearest.distance<=sampled+1e-6,'nearest cubic candidate must be at least as close as dense samples');
+ }
+ for(const t of [0,1,.00001,.99999,NaN,Infinity])assert.throws(()=>insertCurvePoint(connection,0,0,t));
+ assert.throws(()=>insertCurvePoint(connection,0,99,.5));
+ assert.throws(()=>insertCurvePoint(connection,99,0,.5));
+ const singleton={...base,curves:[{...base.curves[0],points:[{x:0,y:0}]}]};
+ assert.throws(()=>insertCurvePoint(singleton,0,0,.5),/두 개/);
+ assert.throws(()=>nearestCurvePosition(singleton.curves[0],{x:0,y:0},1,1),/두 개/);
+ assert.throws(()=>nearestCurvePosition(smoothed.curves[0],{x:0,y:0},0,1));
+ const fullCurve={...base,curves:[{...base.curves[0],points:Array.from({length:500},(_,x)=>({x,y:0}))}]};
+ assert.throws(()=>insertCurvePoint(fullCurve,0,0,.5),/500개/);
+ assert.equal(insertCurvePoint({...fullCurve,curves:[{...fullCurve.curves[0],points:fullCurve.curves[0].points.slice(0,499)}]},0,0,.5).graph.curves[0].points.length,500);
+ assert.throws(()=>insertCurvePoint({...base,curves:[{...base.curves[0],points:[{x:1,y:1},{x:1,y:1}]}]},0,0,.5),/이미 점/);
+
+ const shade={curve:0,mode:'baseline',baseline:0,xStart:.5,xEnd:3.5,pattern:'solid',opacity:.2};
+ const shaded={...smoothed,shadings:[shade]};
+ const shadedOriginal=structuredClone(shaded),shadeSvg=renderGraph(shaded,undefined,'shade-test');
+ const shadePath=shadeSvg.match(/data-shading="0" d="([^"]+)"/)?.[1];
+ assert.equal(shadingIssue(shaded,shade),'');
+ assert.ok(shadePath.startsWith(curvePath(smoothed)),'shade must share the exact rendered cubic boundary');
+ assert.ok(shadePath.endsWith(' Z'));
+ assert.ok(shadeSvg.indexOf('data-shading="0"')<shadeSvg.indexOf('stroke-dasharray="5 4"'),'shades go behind guide lines');
+ const layout=graphLayout(shaded);
+ const clip=shadeSvg.match(/id="shade-test-shade-clip-0"><rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)"/).slice(1).map(Number);
+ assert.deepEqual(clip,[layout.X(.5),layout.T,layout.X(3.5)-layout.X(.5),layout.B-layout.T],'clip must combine requested x interval and exact plotting rectangle');
+ const hatched={...shaded,shadings:[{...shade,pattern:'hatch'},{...shade,pattern:'hatch',baseline:1}]};
+ const hatchSvg=renderGraph(hatched,undefined,'preview-one'),otherHatchSvg=renderGraph(hatched,undefined,'preview-two');
+ for(const i of [0,1]){
+  assert.ok(hatchSvg.includes(`id="preview-one-shade-hatch-${i}"`));
+  assert.ok(hatchSvg.includes(`fill="url(#preview-one-shade-hatch-${i})"`));
+ }
+ assert.ok(!otherHatchSvg.includes('preview-one-shade'),'hatch IDs must be scoped to the rendered graph');
+ assert.equal((hatchSvg.match(/<pattern /g)||[]).length,2);
+ const between={...shaded,curves:[smoothed.curves[0],{...smoothed.curves[0],points:[{x:1,y:3},{x:2,y:0},{x:5,y:3}]}],shadings:[{...shade,mode:'between',otherCurve:1,xStart:-1,xEnd:6}]};
+ const betweenSvg=renderGraph(between,undefined,'between-test'),betweenD=betweenSvg.match(/data-shading="0" d="([^"]+)"/)?.[1];
+ assert.equal(shadingIssue(between,between.shadings[0]),'');
+ assert.equal((betweenD.match(/ C/g)||[]).length,4,'both forward and reversed smooth boundaries must retain cubic segments');
+ assert.ok(betweenSvg.includes('fill-rule="evenodd"'),'crossing curves must shade alternating interiors');
+ const betweenClip=betweenSvg.match(/id="between-test-shade-clip-0"><rect x="([^"]+)" y="[^"]+" width="([^"]+)"/).slice(1).map(Number);
+ assert.deepEqual(betweenClip,[layout.X(1),layout.X(4)-layout.X(1)],'between mode uses only the common domain of the two curves');
+ const invalidShades=[{...shade,curve:11},{...shade,xStart:4,xEnd:2},{...shade,xStart:6,xEnd:7},{...shade,mode:'between'},{...shade,mode:'between',otherCurve:0},{...shade,mode:'closed'},{...shade,opacity:NaN}];
+ for(const invalid of invalidShades){
+  assert.ok(shadingIssue(shaded,invalid));
+  assert.ok(!renderGraph({...shaded,shadings:[invalid]}).includes('data-shading='),'invalid shades must safely skip rendering');
+ }
+ assert.ok(shadingIssue(singleton,shade));
+ assert.equal(graphSchema.safeParse({...shaded,shadings:Array(21).fill(shade)}).success,false);
+ assert.equal(graphSchema.safeParse(shaded).success,true);
+ assert.equal(graphSchema.safeParse(base).success,true,'existing graphs without shadings remain compatible');
+ assert.deepEqual(shaded,shadedOriginal,'shading validation and rendering must not mutate the graph');
+ const removeFixture={...between,curves:[...between.curves,connection.curves[0]],shadings:[shade,{...shade,curve:2},{...shade,curve:1,mode:'between',otherCurve:2},{...shade,mode:'between',otherCurve:2}]};
+ const removeOriginal=structuredClone(removeFixture),removed=removeCurve(removeFixture,0);
+ assert.equal(removed.curves.length,2);
+ assert.deepEqual(removed.shadings,[{...shade,curve:1},{...shade,curve:0,mode:'between',otherCurve:1}],'deleting a curve removes dependent shades and reindexes retained references');
+ assert.deepEqual(removeFixture,removeOriginal);
+ assert.throws(()=>removeCurve(removeFixture,99));
+ assert.equal(removeCurve(base,0).shadings,undefined);
  const clamped=movePoint(base,0,1,100,-100);
  assert.deepEqual(clamped.curves[0].points[1],{x:base.xMax,y:base.yMin});
  assert.deepEqual(clamped.guides,base.guides,'following is opt-in');
@@ -87,6 +181,21 @@ try{
 
  const pv=structuredClone(presets.find(p=>p.id==='pv').graph);
  const pvOriginal=structuredClone(pv);
+ const verticalInsert=insertCurvePoint(pv,0,0,.5);
+ assert.deepEqual(verticalInsert.graph.curves[0].points[1],{x:1,y:1.5});
+ const closingInsert=insertCurvePoint(pv,0,3,.5);
+ assert.deepEqual(closingInsert.graph.curves[0].points[4],{x:1.5,y:1});
+ assert.deepEqual(closingInsert.graph.curves[0].points[0],closingInsert.graph.curves[0].points.at(-1));
+ const closedShade={...shade,mode:'closed',xStart:2,xEnd:1};
+ const closedGraph={...pv,shadings:[closedShade]};
+ assert.equal(shadingIssue(closedGraph,closedShade),'','closed shade ignores the x interval');
+ assert.ok(shadingIssue(pv,shade),'vertical and closed paths cannot use baseline interval shading');
+ const closedSvg=renderGraph(closedGraph);
+ assert.ok(closedSvg.includes(`data-shading="0" d="${curvePath(pv)} Z"`));
+ const movedShade=moveCurve(shaded,0,.3,.2);
+ assert.deepEqual(movedShade.shadings,shaded.shadings);
+ assert.notEqual(renderGraph(movedShade).match(/data-shading="0" d="([^"]+)"/)?.[1],shadePath,'shade geometry follows its referenced curve');
+
  const pvLayout=graphLayout(pv),pvPoints=pv.curves[0].points.map(p=>[pvLayout.X(p.x),pvLayout.Y(p.y)]);
  assert.deepEqual(curveArrows(pv),pvPoints.slice(1).map(([x,y],i)=>{
   const [previousX,previousY]=pvPoints[i];
@@ -212,5 +321,5 @@ try{
  assert.throws(()=>adjustText(fixture,{kind:'point',curve:0,index:0},'A'));
  assert.deepEqual(fixture,fixtureOriginal);
  for(const graph of [clamped,shifted,backwards,followed,followedCurve,labelMove])assert.equal(graphSchema.safeParse(graph).success,true);
- console.log('PASS: connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
+ console.log('PASS: shading boundaries and clipping, immutable insertion and nearest cubic points, curve deletion references, connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
 }finally{await rm(temp,{recursive:true,force:true});}

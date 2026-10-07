@@ -1,4 +1,4 @@
-import {graphSchema, type Graph} from './graph';
+import {graphSchema, pointOnCurve, type Graph} from './graph';
 
 export type EditTarget =
  | {kind:'point';curve:number;index:number}
@@ -18,6 +18,30 @@ function finite(...values:number[]){
 function item<T>(items:T[],index:number):T{
  if(!Number.isInteger(index)||index<0||index>=items.length)throw Error('편집할 항목을 찾을 수 없습니다.');
  return items[index];
+}
+
+export function insertCurvePoint(graph:Graph,curve:number,segment:number,t:number):{graph:Graph;index:number}{
+ const source=item(graph.curves,curve);
+ if(source.points.length>=500)throw Error('한 선에는 점을 500개까지 추가할 수 있습니다.');
+ if(source.points.length<2)throw Error('점을 추가하려면 선에 점이 두 개 이상 있어야 합니다.');
+ finite(t);
+ if(t<=.0001||t>=.9999)throw Error('기존 점에서 조금 떨어진 선 위를 선택해 주세요.');
+ const point=pointOnCurve(source,segment,t);
+ if(source.points.some(p=>same(p,point)))throw Error('같은 위치에 이미 점이 있습니다.');
+ // Preserve the order of every existing point, including the repeated last
+ // point of a closed path. Smooth ordered curves must remain strictly ordered.
+ if(source.smooth&&source.points.every((p,i)=>!i||p.x>source.points[i-1].x)&&!(point.x>source.points[segment].x&&point.x<source.points[segment+1].x))throw Error('기존 점 사이에 새 점을 넣을 공간이 없습니다.');
+ const index=segment+1,points=[...source.points.slice(0,index),point,...source.points.slice(index)];
+ return {graph:graphSchema.parse({...graph,curves:graph.curves.map((c,i)=>i===curve?{...c,points}:c)}),index};
+}
+
+export function removeCurve(graph:Graph,index:number):Graph{
+ item(graph.curves,index);
+ const shadings=graph.shadings?.filter(s=>s.curve!==index&&(s.mode!=='between'||s.otherCurve!==index)).map(s=>({
+  ...s,curve:s.curve>index?s.curve-1:s.curve,
+  ...(s.otherCurve===undefined?{}:{otherCurve:s.otherCurve===index?0:s.otherCurve>index?s.otherCurve-1:s.otherCurve}),
+ }));
+ return graphSchema.parse({...graph,curves:graph.curves.filter((_,i)=>i!==index),...(shadings===undefined?{}:{shadings})});
 }
 
 function followAnchors(graph:Graph,movements:Movement[]):Graph{

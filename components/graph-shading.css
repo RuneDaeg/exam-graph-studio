@@ -1,0 +1,42 @@
+.graph-shading{width:100%;max-width:900px;margin:10px auto 15px;padding:16px;border:1px solid var(--border-strong);border-radius:9px;background:var(--card);color:var(--foreground);box-shadow:0 3px 12px rgb(var(--primary-rgb) / 3%)}
+.shading-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.shading-heading h3{font-size:14px;font-weight:650;color:var(--primary);margin:0!important}
+.shading-heading p,.shading-empty{font-size:12px;line-height:1.7;color:var(--muted-foreground);margin:5px 0 0}
+.shading-heading .icon-button{flex:none;min-width:28px;min-height:28px}
+.shading-list{list-style:none;padding:0;margin:0 0 14px;display:flex;flex-direction:column;gap:6px}
+.shading-list li{display:flex;align-items:center;gap:9px;border:1px solid var(--border);border-radius:7px;padding:9px;background:var(--surface-light)}
+.shading-list li.active{border-color:var(--border-active);background:var(--surface-tint)}
+.shading-summary{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted-foreground);line-height:1.5}
+.shading-summary strong{font-size:12px;font-weight:600;color:var(--foreground);overflow-wrap:anywhere}
+.shading-summary .shading-warning{color:#9a3939}
+.shading-list .icon-button{min-width:30px;min-height:32px;flex:none}
+.shading-delete:hover{color:var(--destructive)}
+.graph-shading .shading-new{font-size:12px;min-height:34px;margin-bottom:12px;padding:7px 10px}
+.shading-form{border-top:1px solid var(--border-soft);padding-top:13px}
+.shading-form-title{font-size:12px;font-weight:650;margin-bottom:12px;color:var(--primary)}
+.shading-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.shading-fields>label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px;color:var(--muted-foreground)}
+.shading-fields input,.shading-fields select{width:100%;min-width:0;margin:0;font:inherit;font-size:13px;color:var(--foreground);border:1px solid var(--input);border-radius:6px;background:white;padding:8px 10px;min-height:36px}
+.shading-fields select:focus-visible{outline:3px solid var(--focus-outline);outline-offset:2px}
+.shading-field-wide{grid-column:1/-1}
+.shading-field-wide>input{max-width:calc(50% - 6px)}
+.shading-field-note{font-size:11px;color:var(--muted-foreground);line-height:1.7;margin:0}
+.shading-style-fields{display:flex;align-items:flex-end;gap:24px;flex-wrap:wrap;margin-top:15px}
+.shading-style-fields fieldset{border:0;margin:0;padding:0;min-width:0}
+.shading-style-fields legend{font-size:12px;color:var(--muted-foreground);padding:0;margin-bottom:7px}
+.shading-patterns{display:flex;gap:6px}
+.shading-patterns>label{display:flex;align-items:center;gap:7px;border:1px solid var(--input);border-radius:6px;background:white;min-height:36px;padding:7px 10px;font-size:12px;cursor:pointer;color:var(--muted-foreground)}
+.shading-patterns>label.active{color:var(--primary);background:var(--accent);border-color:var(--primary)}
+.shading-patterns>label:has(input:focus-visible){outline:3px solid var(--focus-outline);outline-offset:2px}
+.shading-patterns input{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;clip-path:inset(50%);border:0}
+.shading-swatch{display:block;width:19px;height:19px;flex:none;border:1px solid #b7bdc5;border-radius:3px;background:#9aa0a8}
+.shading-swatch.hatch{background:repeating-linear-gradient(135deg,white 0 3px,#7b828b 3px 4px,white 4px 6px)}
+.shading-opacity{display:flex;flex:1;min-width:150px;max-width:260px;flex-direction:column;gap:8px;padding-bottom:4px;font-size:12px;color:var(--muted-foreground)}
+.shading-opacity>span{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.shading-opacity output{font-size:11px;color:var(--primary);font-variant-numeric:tabular-nums}
+.shading-opacity input{width:100%;height:17px;margin:0;padding:0;accent-color:var(--primary);box-shadow:none;cursor:pointer}
+.shading-validation{margin:12px 0 0;color:#9a3939;background:#fff7f5;border-radius:6px;padding:8px 10px;font-size:11px;line-height:1.7}
+.shading-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.shading-actions .button{min-height:35px;padding:8px 12px;font-size:12px}
+.editor-body .graph-shading{border:0;padding:4px 0;box-shadow:none;margin:0}
+@media(max-width:720px){.graph-shading{padding:12px}.shading-heading p{font-size:11px}.shading-fields{gap:10px}.shading-fields input,.shading-fields select{font-size:12px;padding:8px}.shading-style-fields{gap:15px}.shading-opacity{min-width:120px}.shading-list li{gap:6px;padding:7px}.shading-list .shading-swatch{width:15px;height:15px}.shading-summary strong{font-size:11px}.shading-summary{font-size:10px}.shading-patterns>label{gap:5px;padding:7px 8px}}

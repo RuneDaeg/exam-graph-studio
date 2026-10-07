@@ -2,21 +2,144 @@ import { z } from 'zod';
 const num = z.number().finite().min(-1000000).max(1000000);
 const point = z.object({x:num,y:num});
 const tick = z.object({value:num,label:z.string().max(80)});
+const shading = z.object({curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)});
 export const graphSchema = z.object({
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
  xMin:num,xMax:num,yMin:num,yMax:num,
  xTicks:z.array(tick).max(30),yTicks:z.array(tick).max(30),
  curves:z.array(z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean()})).max(12),
+ shadings:z.array(shading).max(20).optional(),
  guides:z.array(z.object({x1:num,y1:num,x2:num,y2:num})).max(80),
  labels:z.array(z.object({x:num,y:num,text:z.string().max(120),dx:num,dy:num})).max(40),
  note:z.string().max(1000)
 }).refine(g=>g.xMax>g.xMin&&g.yMax>g.yMin,{message:'축의 최댓값은 최솟값보다 커야 합니다.'});
 export type Graph = z.infer<typeof graphSchema>;
+export type Shading = NonNullable<Graph['shadings']>[number];
+type Curve = Graph['curves'][number];
+type Point = Curve['points'][number];
+type Segment = {from:Point;to:Point;c1?:Point;c2?:Point};
 export function smoothConnectionIssue(points:Graph['curves'][number]['points']):string{
  if(points.length<3)return '매끄러운 곡선에는 점이 3개 이상 필요합니다.';
  if(points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return '좌표에 유한한 숫자를 입력해 주세요.';
  if(points.some((p,i)=>i>0&&p.x<=points[i-1].x))return '수직선이나 닫힌 경로는 직선 연결을 사용합니다. 곡선으로 연결하려면 점을 왼쪽부터 순서대로 배치해 주세요.';
  return '';
+}
+
+// Keep one set of Bézier controls for visible strokes, shading boundaries,
+// direction arrows and insertion. Affine scaling preserves these cubics.
+function curveSegments(curve:Curve):Segment[]{
+ const points=curve.points,smooth=curve.smooth&&!smoothConnectionIssue(points);
+ const tangentOffset=(i:number,h:number)=>{
+  if(i===0)return points[1].y-points[0].y;
+  if(i===points.length-1)return points[i].y-points[i-1].y;
+  const dyA=points[i].y-points[i-1].y,dyB=points[i+1].y-points[i].y;
+  if(!dyA||!dyB||Math.sign(dyA)!==Math.sign(dyB))return 0;
+  const dxA=points[i].x-points[i-1].x,dxB=points[i+1].x-points[i].x;
+  const a=Math.abs(dyA/dxA),b=Math.abs(dyB/dxB),small=Math.min(a,b),large=Math.max(a,b);
+  if(Number.isFinite(large))return Math.sign(dyA)*(small/(1+small/large))*h*2;
+  // Extremely small x units can overflow a world-space slope. The ratio
+  // form keeps the offset bounded by twice the local y difference.
+  const local=h===dxA?dyA:dyB,other=h===dxA?dyB:dyA,otherH=h===dxA?dxB:dxA;
+  const logRatio=Math.log(Math.abs(local))-Math.log(h)-Math.log(Math.abs(other))+Math.log(otherH);
+  return 2*local/(1+Math.exp(logRatio));
+ };
+ return points.slice(1).map((to,i)=>{
+  const from=points[i],h=to.x-from.x;
+  return smooth?{from,to,c1:{x:from.x+h/3,y:from.y+tangentOffset(i,h)/3},c2:{x:to.x-h/3,y:to.y-tangentOffset(i+1,h)/3}}:{from,to};
+ });
+}
+function segmentPoint(segment:Segment,t:number):Point{
+ const {from,to,c1,c2}=segment;
+ if(t===0)return {...from};
+ if(t===1)return {...to};
+ if(!c1||!c2)return {x:from.x+(to.x-from.x)*t,y:from.y+(to.y-from.y)*t};
+ const u=1-t;
+ // Use offsets from the first point to preserve small differences at large
+ // translated coordinates. Both axes use the exact controls that are drawn.
+ const value=(a:number,b:number,c:number,d:number)=>a+3*u*u*t*(b-a)+3*u*t*t*(c-a)+t*t*t*(d-a);
+ return {x:value(from.x,c1.x,c2.x,to.x),y:value(from.y,c1.y,c2.y,to.y)};
+}
+export function pointOnCurve(curve:Curve,segment:number,t:number):Point{
+ if(!Number.isInteger(segment)||segment<0||segment>=curve.points.length-1)throw Error('점을 추가할 선분을 찾을 수 없습니다.');
+ if(!Number.isFinite(t)||t<0||t>1)throw Error('선분 안의 위치를 선택해 주세요.');
+ return segmentPoint(curveSegments(curve)[segment],t);
+}
+function unitPolynomialRoots(coefficients:number[]):number[]{
+ const scale=Math.max(...coefficients.map(Math.abs));
+ if(!scale)return [];
+ const p=coefficients.map(c=>c/scale);
+ while(p.length>1&&Math.abs(p.at(-1)!)<1e-14)p.pop();
+ if(p.length===1)return [];
+ if(p.length===2){const root=-p[0]/p[1];return root>=0&&root<=1?[root]:[];}
+ const value=(t:number)=>p.reduceRight((sum,c)=>sum*t+c,0);
+ const critical=unitPolynomialRoots(p.slice(1).map((c,i)=>c*(i+1)));
+ const boundaries=[0,...critical.filter(t=>t>0&&t<1),1],roots:number[]=[];
+ const add=(t:number)=>{if(!roots.some(root=>Math.abs(t-root)<1e-9))roots.push(t);};
+ for(const t of boundaries)if(Math.abs(value(t))<1e-12)add(t);
+ for(let i=1;i<boundaries.length;i++){
+  let lo=boundaries[i-1],hi=boundaries[i],left=value(lo);
+  if(left*value(hi)>=0)continue;
+  for(let pass=0;pass<48;pass++){
+   const mid=(lo+hi)/2,v=value(mid);
+   if(left*v<=0)hi=mid;else{lo=mid;left=v;}
+  }
+  add((lo+hi)/2);
+ }
+ return roots.sort((a,b)=>a-b);
+}
+export function nearestCurvePosition(curve:Curve,point:Point,scaleX:number,scaleY:number):{segment:number;t:number;point:Point;distance:number}{
+ if(curve.points.length<2)throw Error('점을 추가하려면 선에 점이 두 개 이상 있어야 합니다.');
+ if(![point.x,point.y,scaleX,scaleY].every(Number.isFinite)||scaleX===0||scaleY===0)throw Error('유효한 좌표와 화면 배율을 입력해 주세요.');
+ let best={segment:0,t:0,point:{...curve.points[0]},distance:Infinity};
+ for(const [index,segment] of curveSegments(curve).entries()){
+  const distance=(t:number)=>{const p=segmentPoint(segment,t);return ((p.x-point.x)*scaleX)**2+((p.y-point.y)*scaleY)**2;};
+  const consider=(t:number)=>{
+   const d=distance(t);
+   if(d<best.distance)best={segment:index,t,point:segmentPoint(segment,t),distance:d};
+  };
+  if(!segment.c1){
+   const dx=(segment.to.x-segment.from.x)*scaleX,dy=(segment.to.y-segment.from.y)*scaleY,denominator=dx*dx+dy*dy;
+   consider(denominator?Math.max(0,Math.min(1,((point.x-segment.from.x)*scaleX*dx+(point.y-segment.from.y)*scaleY*dy)/denominator)):0);
+   continue;
+  }
+  // The derivative of squared distance to a cubic is a degree-five
+  // polynomial. Isolating its roots finds all candidate minima, including
+  // those very close to a knot, without projecting onto straight chords.
+  const coefficients=(axis:'x'|'y',scale:number)=>{
+   const start=segment.from[axis],a=segment.c1![axis]-start,b=segment.c2![axis]-start,c=segment.to[axis]-start;
+   return [(start-point[axis])*scale,3*a*scale,(3*b-6*a)*scale,(c+3*a-3*b)*scale];
+  };
+  const derivative=Array<number>(6).fill(0);
+  for(const axis of [coefficients('x',scaleX),coefficients('y',scaleY)])for(let i=0;i<axis.length;i++)for(let j=1;j<axis.length;j++)derivative[i+j-1]+=axis[i]*axis[j]*j;
+  consider(0);consider(1);
+  for(const t of unitPolynomialRoots(derivative))consider(t);
+ }
+ return {...best,distance:Math.sqrt(best.distance)};
+}
+function orderedFunction(curve:Curve){
+ return curve.points.length>=2&&curve.points.every((p,i)=>Number.isFinite(p.x)&&Number.isFinite(p.y)&&(!i||p.x>curve.points[i-1].x));
+}
+function shadingRange(graph:Graph,shade:Shading):[number,number]{
+ const curve=graph.curves[shade.curve],other=shade.mode==='between'?graph.curves[shade.otherCurve!]:undefined;
+ return [Math.max(graph.xMin,shade.xStart,curve.points[0].x,other?.points[0].x??-Infinity),Math.min(graph.xMax,shade.xEnd,curve.points.at(-1)!.x,other?.points.at(-1)?.x??Infinity)];
+}
+export function shadingIssue(graph:Graph,shade:Shading):string{
+ if(!shading.safeParse(shade).success)return '음영의 좌표, 진하기, 선 선택 값을 확인해 주세요.';
+ const curve=graph.curves[shade.curve];
+ if(!curve)return '음영을 적용할 선을 선택해 주세요.';
+ if(shade.mode==='closed'){
+  const first=curve.points[0],last=curve.points.at(-1);
+  return curve.points.length>=4&&first.x===last?.x&&first.y===last.y?'':'닫힌 영역은 점이 4개 이상이고 첫 점과 마지막 점이 같아야 합니다.';
+ }
+ if(!orderedFunction(curve))return '구간 음영은 점이 2개 이상이고 왼쪽부터 순서대로 이어진 선에 사용할 수 있습니다.';
+ if(shade.xStart>=shade.xEnd)return '음영 구간의 끝은 시작보다 커야 합니다.';
+ if(shade.mode==='between'){
+  const other=graph.curves[shade.otherCurve!];
+  if(!other||shade.otherCurve===shade.curve)return '사이 영역을 만들 다른 선을 선택해 주세요.';
+  if(!orderedFunction(other))return '두 선 모두 점이 2개 이상이고 왼쪽부터 순서대로 이어져야 합니다.';
+ }
+ const [start,end]=shadingRange(graph,shade);
+ return start<end?'':'선과 음영 구간이 현재 축 범위 안에서 겹쳐야 합니다.';
 }
 export type Style = {lineWidth:number;fontSize:number;guides:boolean;arrows:boolean;transparent:boolean;width:number;height:number;font:'serif'|'sans'};
 export const defaultStyle:Style={lineWidth:2.5,fontSize:23,guides:true,arrows:true,transparent:false,width:760,height:540,font:'serif'};
@@ -53,30 +176,43 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  const text=(x:number,y:number,t:string,anchor='middle',size=s.fontSize,edit='')=>`<text ${edit?`data-edit="${edit}"`:''} data-label="${esc(t).replace(/\n/g,'&#10;')}" x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" font-size="${size}" fill="#151515">${t.split('\n').map((line,i)=>`<tspan x="${n(x)}" dy="${i?1.2:0}em">${rich(line)}</tspan>`).join('')}</text>`;
  const line=(x1:number,y1:number,x2:number,y2:number,extra='')=>`<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" ${extra}/>`;
  const a=s.arrows?`marker-end="url(#${id}-arrow)"`:'';
- let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath></defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${s.font==='serif'?"'Times New Roman', 'Noto Serif KR', 'Batang', serif":"'Arial', 'Apple SD Gothic Neo', sans-serif"}" font-style="normal">`;
+ const geometries=g.curves.map(curveSegments);
+ const pathData=(ci:number,reverse=false,start='M')=>{
+  const curve=g.curves[ci],segments=geometries[ci];
+  const first=reverse?curve.points.at(-1):curve.points[0];
+  if(!first)return '';
+  let d=`${start}${n(X(first.x))},${n(Y(first.y))}`;
+  for(const segment of reverse?[...segments].reverse():segments){
+   const to=reverse?segment.from:segment.to,c1=reverse?segment.c2:segment.c1,c2=reverse?segment.c1:segment.c2;
+   d+=c1&&c2?` C${n(X(c1.x))},${n(Y(c1.y))} ${n(X(c2.x))},${n(Y(c2.y))} ${n(X(to.x))},${n(Y(to.y))}`:` L${n(X(to.x))},${n(Y(to.y))}`;
+  }
+  return d;
+ };
+ let shadeDefs='',shadePaths='';
+ for(const [index,shade] of (g.shadings??[]).entries()){
+  if(shadingIssue(g,shade))continue;
+  const curve=g.curves[shade.curve],first=curve.points[0],last=curve.points.at(-1)!;
+  const [start,end]=shade.mode==='closed'?[g.xMin,g.xMax]:shadingRange(g,shade);
+  const clip=`${id}-shade-clip-${index}`,hatch=`${id}-shade-hatch-${index}`;
+  shadeDefs+=`<clipPath id="${clip}"><rect x="${X(start)}" y="${T}" width="${X(end)-X(start)}" height="${B-T}"/></clipPath>`;
+  if(shade.pattern==='hatch')shadeDefs+=`<pattern id="${hatch}" patternUnits="userSpaceOnUse" width="7" height="7"><path d="M-1 1 L1 -1 M0 7 L7 0 M6 8 L8 6" fill="none" stroke="#151515" stroke-width="1.2"/></pattern>`;
+  let d=pathData(shade.curve);
+  if(shade.mode==='baseline')d+=` L${n(X(last.x))},${n(Y(shade.baseline))} L${n(X(first.x))},${n(Y(shade.baseline))}`;
+  if(shade.mode==='between')d+=' '+pathData(shade.otherCurve!,true,'L');
+  shadePaths+=`<path data-shading="${index}" d="${d} Z" fill="${shade.pattern==='hatch'?`url(#${hatch})`:'#151515'}" fill-rule="evenodd" opacity="${shade.opacity}" clip-path="url(#${clip})"/>`;
+ }
+ let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath>${shadeDefs}</defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${s.font==='serif'?"'Times New Roman', 'Noto Serif KR', 'Batang', serif":"'Arial', 'Apple SD Gothic Neo', sans-serif"}" font-style="normal">${shadePaths}`;
  if(s.guides)out+=`<g stroke="#666" stroke-width="${s.lineWidth*.6}" stroke-dasharray="5 4" clip-path="url(#${id}-clip)">${g.guides.map(p=>line(X(p.x1),Y(p.y1),X(p.x2),Y(p.y2))).join('')}</g>`;
  out+=`<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${line(L,oy,R+20,oy,a)}${line(ox,B,ox,T-22,a)}</g>`;
  out+=text(R+20,oy+43,g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,T-25,g.yLabel,'end',s.fontSize,'axis:y')+(g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0?text(ox-15,oy+27,'0'):'');
  g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||t.value===zx)return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
  g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||t.value===zy)return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
- for(const [ci,c] of g.curves.entries()){const pts=c.points.map(p=>[X(p.x),Y(p.y)]);let d=pts.length?`M${n(pts[0][0])},${n(pts[0][1])}`:'';
-  const smooth=c.smooth&&!smoothConnectionIssue(c.points)&&pts.every((p,j)=>!j||p[0]>pts[j-1][0]);
-  const arrowSegments:number[][]=[];
-  const slope=(j:number)=>(pts[j+1][1]-pts[j][1])/(pts[j+1][0]-pts[j][0]);
-  const tangent=(j:number)=>{if(j===0)return slope(0);if(j===pts.length-1)return slope(j-1);const a=slope(j-1),b=slope(j);return a*b<=0?0:2*a*b/(a+b);};
-  for(let i=1;i<pts.length;i++){
-   const p1=pts[i-1],p2=pts[i],h=p2[0]-p1[0];
-   if(smooth){
-    const c1=[p1[0]+h/3,p1[1]+tangent(i-1)*h/3],c2=[p2[0]-h/3,p2[1]-tangent(i)*h/3];
-    d+=` C${n(c1[0])},${n(c1[1])} ${n(c2[0])},${n(c2[1])} ${n(p2[0])},${n(p2[1])}`;
-    // Place direction marks along the same cubic, including its local direction.
-    const at=(t:number)=>{const u=1-t;return [0,1].map(j=>u*u*u*p1[j]+3*u*u*t*c1[j]+3*u*t*t*c2[j]+t*t*t*p2[j]);};
-    if(c.arrows)arrowSegments.push([...at(.48),...at(.56)]);
-   }else{
-    d+=` L${n(p2[0])},${n(p2[1])}`;
-    if(c.arrows)arrowSegments.push([p1[0]+h*.48,p1[1]+(p2[1]-p1[1])*.48,p1[0]+h*.56,p1[1]+(p2[1]-p1[1])*.56]);
-   }
-  }
+ for(const [ci,c] of g.curves.entries()){
+  const pts=c.points.map(p=>[X(p.x),Y(p.y)]),d=pathData(ci);
+  const arrowSegments=c.arrows?geometries[ci].map(segment=>{
+   const p=segmentPoint(segment,.48),q=segmentPoint(segment,.56);
+   return [X(p.x),Y(p.y),X(q.x),Y(q.y)];
+  }):[];
   out+=`<g clip-path="url(#${id}-clip)"><path data-edit="curve:${ci}" d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${c.dashed?'stroke-dasharray="6 5"':''}/>`;
   if(c.dots)out+=pts.map(([x,y])=>`<circle cx="${n(x)}" cy="${n(y)}" r="${s.lineWidth*2}" fill="#151515"/>`).join('');
   if(c.arrows)for(const [x,y,xx,yy] of arrowSegments)out+=line(x,y,xx,yy,`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);
@@ -84,8 +220,11 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  }
  out+=g.labels.map((l,i)=>(l.text==='0'&&l.x===0&&l.y===0&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0)?'':text(X(l.x)+l.dx,Y(l.y)+l.dy,l.text,'middle',s.fontSize,`label:${i}`)).join('');return out+'</g></svg>';
 }
-export function parseCoordinates(input:string):{x:number;y:number}[]{
- const matches=[...input.matchAll(/\(\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*\)/g)];
+export function parseCoordinates(input:string,strict=false):{x:number;y:number}[]{
+ const scalar='[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?';
+ const coordinates=new RegExp(`\\(\\s*(${scalar})\\s*,\\s*(${scalar})\\s*\\)`,'g');
+ const matches=[...input.matchAll(coordinates)];
+ if(strict&&input.replace(coordinates,'').replace(/[,\s]/g,''))throw Error('좌표 형식을 확인해 주세요. 예: (0,0), (2,3), (4,1)');
  if(matches.length<2)throw Error('좌표를 두 개 이상 입력해 주세요. 예: (0,0), (2,3), (4,1)');
  if(matches.length>500)throw Error('좌표는 500개까지 입력할 수 있습니다.');
  const points=matches.map(m=>({x:Number(m[1]),y:Number(m[2])}));
