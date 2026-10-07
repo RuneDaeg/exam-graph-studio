@@ -32,28 +32,32 @@ export const presets:{id:string;subject:string;name:string;description:string;gr
 ];
 const esc=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]!));
 function rich(s:string){return s.split(/(_\{[^}]+\}|\^\{[^}]+\}|_[A-Za-z0-9]+|\^[A-Za-z0-9]+)/).map(t=>/^[_^]/.test(t)?`<tspan baseline-shift="${t[0]==='_'?'sub':'super'}" font-size="70%">${esc(t.slice(1).replace(/[{}]/g,''))}</tspan>`:esc(t).replace(/([A-Za-z]+)/g,word=>/^(m|s|kg|mol|mL|Pa|Hz|cm|HCl|NaOH)$/.test(word)?word:word.replace(/[A-Za-z]/g,'<tspan font-style="italic">$&</tspan>'))).join('');}
-export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
+export function graphLayout(g:Graph,s:Style=defaultStyle){
  const w=s.width,h=s.height,L=Math.min(w*.34,Math.max(Math.min(112,w*.2),Math.max(...g.yLabel.split('\n').map(t=>t.replace(/\\[a-zA-Z]+/g,'').replace(/[_^{}]/g,'').length))*s.fontSize*.8+22)),R=w-Math.min(95,w*.14),T=Math.min(66,h*.14),B=h-Math.min(95,h*.2),dx=(R-L)/(g.xMax-g.xMin),dy=(B-T)/(g.yMax-g.yMin);
  const X=(x:number)=>L+(x-g.xMin)*dx,Y=(y:number)=>B-(y-g.yMin)*dy;
  const zx=Math.max(g.xMin,Math.min(0,g.xMax)),zy=Math.max(g.yMin,Math.min(0,g.yMax)),ox=X(zx),oy=Y(zy);
+ return {w,h,L,R,T,B,dx,dy,X,Y,zx,zy,ox,oy,world:(x:number,y:number)=>({x:g.xMin+(x-L)/dx,y:g.yMin+(B-y)/dy})};
+}
+export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
+ const {w,h,L,R,T,B,X,Y,zx,zy,ox,oy}=graphLayout(g,s);
  const n=(x:number)=>Math.round(x*100)/100;
- const text=(x:number,y:number,t:string,anchor='middle',size=s.fontSize)=>`<text data-label="${esc(t).replace(/\n/g,'&#10;')}" x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" font-size="${size}" fill="#151515">${t.split('\n').map((line,i)=>`<tspan x="${n(x)}" dy="${i?1.2:0}em">${rich(line)}</tspan>`).join('')}</text>`;
+ const text=(x:number,y:number,t:string,anchor='middle',size=s.fontSize,edit='')=>`<text ${edit?`data-edit="${edit}"`:''} data-label="${esc(t).replace(/\n/g,'&#10;')}" x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" font-size="${size}" fill="#151515">${t.split('\n').map((line,i)=>`<tspan x="${n(x)}" dy="${i?1.2:0}em">${rich(line)}</tspan>`).join('')}</text>`;
  const line=(x1:number,y1:number,x2:number,y2:number,extra='')=>`<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" ${extra}/>`;
  const a=s.arrows?`marker-end="url(#${id}-arrow)"`:'';
  let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath></defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${s.font==='serif'?"'Times New Roman', 'Noto Serif KR', 'Batang', serif":"'Arial', 'Apple SD Gothic Neo', sans-serif"}" font-style="normal">`;
  if(s.guides)out+=`<g stroke="#666" stroke-width="${s.lineWidth*.6}" stroke-dasharray="5 4" clip-path="url(#${id}-clip)">${g.guides.map(p=>line(X(p.x1),Y(p.y1),X(p.x2),Y(p.y2))).join('')}</g>`;
  out+=`<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${line(L,oy,R+20,oy,a)}${line(ox,B,ox,T-22,a)}</g>`;
- out+=text(R+20,oy+43,g.xLabel,'end')+text(ox-17,T-25,g.yLabel,'end')+(g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0?text(ox-15,oy+27,'0'):'');
- g.xTicks.filter(t=>t.value>=g.xMin&&t.value<=g.xMax&&t.value!==zx).forEach(t=>{out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label);});
- g.yTicks.filter(t=>t.value>=g.yMin&&t.value<=g.yMax&&t.value!==zy).forEach(t=>{out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end');});
- for(const c of g.curves){const pts=c.points.map(p=>[X(p.x),Y(p.y)]);let d=pts.length?`M${n(pts[0][0])},${n(pts[0][1])}`:'';
+ out+=text(R+20,oy+43,g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,T-25,g.yLabel,'end',s.fontSize,'axis:y')+(g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0?text(ox-15,oy+27,'0'):'');
+ g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||t.value===zx)return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
+ g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||t.value===zy)return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
+ for(const [ci,c] of g.curves.entries()){const pts=c.points.map(p=>[X(p.x),Y(p.y)]);let d=pts.length?`M${n(pts[0][0])},${n(pts[0][1])}`:'';
   for(let i=1;i<pts.length;i++){if(c.smooth&&pts.length>2){const p1=pts[i-1],p2=pts[i],h=p2[0]-p1[0];const slope=(j:number)=>(pts[j+1][1]-pts[j][1])/(pts[j+1][0]-pts[j][0]);const tangent=(j:number)=>{if(j===0)return slope(0);if(j===pts.length-1)return slope(j-1);const a=slope(j-1),b=slope(j);return a*b<=0?0:2*a*b/(a+b);};if(h>0&&pts.every((p,j)=>!j||p[0]>pts[j-1][0]))d+=` C${n(p1[0]+h/3)},${n(p1[1]+tangent(i-1)*h/3)} ${n(p2[0]-h/3)},${n(p2[1]-tangent(i)*h/3)} ${n(p2[0])},${n(p2[1])}`;else d+=` L${n(p2[0])},${n(p2[1])}`;}else d+=` L${n(pts[i][0])},${n(pts[i][1])}`;}
-  out+=`<g clip-path="url(#${id}-clip)"><path d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${c.dashed?'stroke-dasharray="6 5"':''}/>`;
+  out+=`<g clip-path="url(#${id}-clip)"><path data-edit="curve:${ci}" d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${c.dashed?'stroke-dasharray="6 5"':''}/>`;
   if(c.dots)out+=pts.map(([x,y])=>`<circle cx="${n(x)}" cy="${n(y)}" r="${s.lineWidth*2}" fill="#151515"/>`).join('');
   if(c.arrows)for(let i=1;i<pts.length;i++){const [x,y]=pts[i-1],[xx,yy]=pts[i];out+=line(x+(xx-x)*.48,y+(yy-y)*.48,x+(xx-x)*.56,y+(yy-y)*.56,`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);}
   out+='</g>';
  }
- out+=g.labels.filter(l=>!(l.text==='0'&&l.x===0&&l.y===0&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0)).map(l=>text(X(l.x)+l.dx,Y(l.y)+l.dy,l.text)).join('');return out+'</g></svg>';
+ out+=g.labels.map((l,i)=>(l.text==='0'&&l.x===0&&l.y===0&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0)?'':text(X(l.x)+l.dx,Y(l.y)+l.dy,l.text,'middle',s.fontSize,`label:${i}`)).join('');return out+'</g></svg>';
 }
 export function parseCoordinates(input:string):{x:number;y:number}[]{
  const matches=[...input.matchAll(/\(\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*\)/g)];
