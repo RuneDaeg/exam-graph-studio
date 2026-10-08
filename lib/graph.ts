@@ -3,7 +3,11 @@ const num = z.number().finite().min(-1000000).max(1000000);
 const point = z.object({x:num,y:num});
 const tick = z.object({value:num,label:z.string().max(80)});
 const lineStyle = z.enum(['solid','dashed','dotted','dash-dot','dash-dot-dot']);
-const shading = z.object({curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)});
+const shading = z.object({curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed','rectangle']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,yStart:num.optional(),yEnd:num.optional(),pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)}).superRefine((shade,ctx)=>{
+ if(shade.mode!=='rectangle')return;
+ if(shade.xStart>=shade.xEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['xEnd'],message:'사각형의 가로 끝은 시작보다 커야 합니다.'});
+ if(shade.yStart===undefined||shade.yEnd===undefined||shade.yStart>=shade.yEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['yEnd'],message:'사각형의 세로 시작과 끝을 입력하고 끝을 더 크게 설정해 주세요.'});
+});
 export const graphSchema = z.object({
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
  xMin:num,xMax:num,yMin:num,yMax:num,
@@ -138,6 +142,7 @@ function shadingRange(graph:Graph,shade:Shading):[number,number]{
 }
 export function shadingIssue(graph:Graph,shade:Shading):string{
  if(!shading.safeParse(shade).success)return '음영의 좌표, 진하기, 선 선택 값을 확인해 주세요.';
+ if(shade.mode==='rectangle')return Math.max(graph.xMin,shade.xStart)<Math.min(graph.xMax,shade.xEnd)&&Math.max(graph.yMin,shade.yStart!)<Math.min(graph.yMax,shade.yEnd!)?'':'사각형 음영이 현재 축 범위와 겹쳐야 합니다.';
  const curve=graph.curves[shade.curve];
  if(!curve)return '음영을 적용할 선을 선택해 주세요.';
  if(shade.mode==='closed'){
@@ -204,14 +209,19 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  let shadeDefs='',shadePaths='';
  for(const [index,shade] of (g.shadings??[]).entries()){
   if(shadingIssue(g,shade))continue;
-  const curve=g.curves[shade.curve],first=curve.points[0],last=curve.points.at(-1)!;
-  const [start,end]=shade.mode==='closed'?[g.xMin,g.xMax]:shadingRange(g,shade);
+  const [start,end]=shade.mode==='closed'||shade.mode==='rectangle'?[g.xMin,g.xMax]:shadingRange(g,shade);
   const clip=`${id}-shade-clip-${index}`,hatch=`${id}-shade-hatch-${index}`;
   shadeDefs+=`<clipPath id="${clip}"><rect x="${X(start)}" y="${T}" width="${X(end)-X(start)}" height="${B-T}"/></clipPath>`;
   if(shade.pattern==='hatch')shadeDefs+=`<pattern id="${hatch}" patternUnits="userSpaceOnUse" width="7" height="7"><path d="M-1 1 L1 -1 M0 7 L7 0 M6 8 L8 6" fill="none" stroke="#151515" stroke-width="1.2"/></pattern>`;
-  let d=pathData(shade.curve);
-  if(shade.mode==='baseline')d+=` L${n(X(last.x))},${n(Y(shade.baseline))} L${n(X(first.x))},${n(Y(shade.baseline))}`;
-  if(shade.mode==='between')d+=' '+pathData(shade.otherCurve!,true,'L');
+  let d:string;
+  if(shade.mode==='rectangle'){
+   d=`M${n(X(shade.xStart))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yEnd!))} L${n(X(shade.xStart))},${n(Y(shade.yEnd!))}`;
+  }else{
+   const curve=g.curves[shade.curve],first=curve.points[0],last=curve.points.at(-1)!;
+   d=pathData(shade.curve);
+   if(shade.mode==='baseline')d+=` L${n(X(last.x))},${n(Y(shade.baseline))} L${n(X(first.x))},${n(Y(shade.baseline))}`;
+   if(shade.mode==='between')d+=' '+pathData(shade.otherCurve!,true,'L');
+  }
   shadePaths+=`<path data-shading="${index}" d="${d} Z" fill="${shade.pattern==='hatch'?`url(#${hatch})`:'#151515'}" fill-rule="evenodd" opacity="${shade.opacity}" clip-path="url(#${clip})"/>`;
  }
  let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath>${shadeDefs}</defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${s.font==='serif'?"'Times New Roman', 'Noto Serif KR', 'Batang', serif":"'Arial', 'Apple SD Gothic Neo', sans-serif"}" font-style="normal">${shadePaths}`;

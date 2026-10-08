@@ -1,11 +1,12 @@
 'use client';
 import {useEffect,useLayoutEffect,useMemo,useRef,useState,type PointerEvent,type KeyboardEvent} from 'react';
-import {Move,MousePointer2,Plus,X,PaintBucket} from 'lucide-react';
+import {Move,MousePointer2,Plus,X,PaintBucket,SquareDashed} from 'lucide-react';
 import {graphLayout,graphSchema,renderGraph,curveLineStyle,smoothConnectionIssue,nearestCurvePosition,type Graph,type Style} from '@/lib/graph';
 import {CurveConnection} from '@/components/curve-connection';
 import {CurveLineStyle} from '@/components/curve-line-style';
 import {CurvePointInsert} from '@/components/curve-point-insert';
 import {GraphShading} from '@/components/graph-shading';
+import {RectangleShadeDraw} from '@/components/rectangle-shade-draw';
 import {typesetSvg,typesetSvgCached} from '@/lib/math-svg';
 import {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,type EditTarget} from '@/lib/graph-edit';
 
@@ -21,6 +22,7 @@ const hasTarget=(g:Graph,t:EditTarget)=>t.kind==='point'?Boolean(g.curves[t.curv
 export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:Graph;style:Style;disabled:boolean;onCommit:(graph:Graph)=>void;onDropImage:(file:File)=>void}){
  const [enabled,setEnabled]=useState(true),[selected,setSelected]=useState<EditTarget|null>(null),[draft,setDraft]=useState<Graph|null>(null);
  const [addingPoint,setAddingPoint]=useState(false),[shadingOpen,setShadingOpen]=useState(false);
+ const [drawingRectangle,setDrawingRectangle]=useState(false),[initialShadingIndex,setInitialShadingIndex]=useState<number|undefined>();
  const [follow,setFollow]=useState(false),[snap,setSnap]=useState(false),[step,setStep]=useState('0.1'),[error,setError]=useState('');
  const [typed,setTyped]=useState<{source:string;svg:string;errors:string[]}>({source:'',svg:'',errors:[]});
  const [boxes,setBoxes]=useState<Box[]>([]),[paths,setPaths]=useState<Path[]>([]),[scale,setScale]=useState(1);
@@ -36,10 +38,11 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
   setPaths(items.filter(el=>el.dataset.edit?.startsWith('curve:')).map(el=>({index:Number(el.dataset.edit!.split(':')[1]),d:el.getAttribute('d')||''})));
  },[display]);
  useLayoutEffect(()=>{const node=content.current;if(!node)return;const observer=new ResizeObserver(()=>setScale(node.getBoundingClientRect().width/style.width||1));observer.observe(node);return()=>observer.disconnect();},[style.width]);
- function cancel(){drag.current=null;setDraft(null);setSelected(t=>t?{...t}:t);}
- useEffect(()=>{const escape=(e:globalThis.KeyboardEvent)=>{if(e.key==='Escape'){drag.current=null;setDraft(null);setAddingPoint(false);setSelected(t=>t?{...t}:t);}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[]);
- useEffect(()=>{drag.current=null;setDraft(null);setSelected(t=>t&&hasTarget(graph,t)?t:null);},[graph]);
+ function cancel(){drag.current=null;setDraft(null);setDrawingRectangle(false);setSelected(t=>t?{...t}:t);}
+ useEffect(()=>{const escape=(e:globalThis.KeyboardEvent)=>{if(e.key==='Escape'){drag.current=null;setDraft(null);setAddingPoint(false);setDrawingRectangle(false);setSelected(t=>t?{...t}:t);}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[]);
+ useEffect(()=>{drag.current=null;setDraft(null);setDrawingRectangle(false);setSelected(t=>t&&hasTarget(graph,t)?t:null);},[graph]);
  useEffect(()=>{setSelected(null);setAddingPoint(false);setShadingOpen(false);},[graph.title]);
+ useEffect(()=>{if(disabled)setDrawingRectangle(false);},[disabled]);
  function svgPoint(e:{clientX:number;clientY:number}){const matrix=overlay.current?.getScreenCTM();return matrix?new DOMPoint(e.clientX,e.clientY).matrixTransform(matrix.inverse()):null;}
  function begin(e:PointerEvent<SVGElement>,target:EditTarget){
   if(disabled||!enabled||e.button!==0)return;e.preventDefault();e.stopPropagation();e.currentTarget.focus({preventScroll:true});setSelected(target);setError('');
@@ -87,16 +90,17 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
  return <>
   <div className="preview-toolbar"><button className={'button '+(enabled?'edit-active':'')} aria-pressed={enabled} onClick={()=>{cancel();setAddingPoint(false);setEnabled(v=>!v);}} disabled={disabled}><MousePointer2 size={15}/>{enabled?'직접 편집 켜짐':'직접 편집 켜기'}</button>
    <button className={'button '+(addingPoint?'edit-active':'')} aria-pressed={addingPoint} disabled={disabled||!graph.curves.some(c=>c.points.length>1&&c.points.length<500)} onClick={()=>{cancel();setEnabled(true);setShadingOpen(false);setAddingPoint(v=>!v);setError('');}}><Plus size={15}/>{addingPoint?'점 추가 취소':'점 추가'}</button>
-   <button className={'button '+(shadingOpen?'edit-active':'')} aria-expanded={shadingOpen} disabled={disabled} onClick={()=>{cancel();setAddingPoint(false);setShadingOpen(v=>!v);}}><PaintBucket size={15}/>{graph.shadings?.length?`음영 편집 (${graph.shadings.length})`:'음영 추가'}</button>
-   <button className="button" disabled={disabled||graph.labels.length>=40} onClick={()=>{const index=graph.labels.length;onCommit({...graph,labels:[...graph.labels,{text:'A',x:(graph.xMin+graph.xMax)/2,y:(graph.yMin+graph.yMax)/2,dx:0,dy:0}]});setEnabled(true);setSelected({kind:'label',index});}}><Plus size={15}/>문자 추가</button>
+   <button className={'button '+(shadingOpen?'edit-active':'')} aria-expanded={shadingOpen} disabled={disabled} onClick={()=>{cancel();setAddingPoint(false);setInitialShadingIndex(undefined);setShadingOpen(v=>!v);}}><PaintBucket size={15}/>{graph.shadings?.length?`음영 편집 (${graph.shadings.length})`:'음영 추가'}</button>
+   <button className={'button '+(drawingRectangle?'edit-active':'')} aria-pressed={drawingRectangle} disabled={disabled||(graph.shadings?.length??0)>=20} onClick={()=>{cancel();setDrawingRectangle(!drawingRectangle);setEnabled(true);setAddingPoint(false);setShadingOpen(false);setSelected(null);setError('');}}><SquareDashed size={15}/>{drawingRectangle?'사각형 취소':'사각형 음영'}</button>
+   <button className="button" disabled={disabled||graph.labels.length>=40} onClick={()=>{cancel();const index=graph.labels.length;onCommit({...graph,labels:[...graph.labels,{text:'A',x:(graph.xMin+graph.xMax)/2,y:(graph.yMin+graph.yMax)/2,dx:0,dy:0}]});setEnabled(true);setSelected({kind:'label',index});}}><Plus size={15}/>문자 추가</button>
    <label><input type="checkbox" checked={snap} onChange={e=>setSnap(e.target.checked)}/>좌표 맞춤</label><input className="snap-step" type="number" min="0" step="any" value={step} disabled={!snap} aria-label="좌표 맞춤 간격" onChange={e=>setStep(e.target.value)}/>
    <label title="이동 전 좌표가 같은 문자와 점선 끝점만 함께 이동합니다."><input type="checkbox" checked={follow} onChange={e=>setFollow(e.target.checked)}/>연결된 문자·점선</label>
   </div>
-  <p className="preview-help" role={addingPoint?'status':undefined}>{addingPoint?'점을 추가할 선 위를 클릭하세요. 기존 점 사이에 삽입됩니다. Esc로 취소 · 키보드는 선 선택 후 아래의 중간 점 추가를 사용하세요.':active?(smoothControls?'점·선을 클릭하면 연결 방식을 바꿀 수 있습니다. 곡선의 조절점은 주변 구간도 매끄럽게 바꿉니다.':'점·선을 클릭해 직선 / 곡선을 선택하세요. 드래그로 이동 · 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
-  {shadingOpen&&!disabled&&<GraphShading graph={graph} onChange={onCommit} initialCurve={selectedCurve??undefined} onClose={()=>setShadingOpen(false)}/>}
+  <p className="preview-help" role={addingPoint||drawingRectangle?'status':undefined}>{drawingRectangle?'축 안에서 대각선으로 드래그해 사각형 영역을 그리세요. Esc로 취소 · 좌표 입력은 음영 편집의 사각형 영역을 사용하세요.':addingPoint?'점을 추가할 선 위를 클릭하세요. 기존 점 사이에 삽입됩니다. Esc로 취소 · 키보드는 선 선택 후 아래의 중간 점 추가를 사용하세요.':active?(smoothControls?'점·선을 클릭하면 연결 방식을 바꿀 수 있습니다. 곡선의 조절점은 주변 구간도 매끄럽게 바꿉니다.':'점·선을 클릭해 직선 / 곡선을 선택하세요. 드래그로 이동 · 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
+  {shadingOpen&&!disabled&&<GraphShading graph={graph} onChange={onCommit} initialCurve={selectedCurve??undefined} initialShadingIndex={initialShadingIndex} onClose={()=>setShadingOpen(false)}/>}
   <div className={'paper '+(style.transparent?'transparent-paper':'')} onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{e.preventDefault();if(!disabled&&e.dataTransfer.files[0])onDropImage(e.dataTransfer.files[0]);}}>
    <div className="graph-preview"><div ref={content} className="graph-art" dangerouslySetInnerHTML={{__html:display}}/>
-    {active&&<svg ref={overlay} className={'graph-edit-overlay '+(addingPoint?'adding-point':'')} viewBox={`0 0 ${style.width} ${style.height}`} aria-label="그래프 직접 편집" role="group" onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={()=>{if(drag.current)cancel();}} onPointerDown={e=>{if(e.target===e.currentTarget)setSelected(null);}}>
+    {active&&!drawingRectangle&&<svg ref={overlay} className={'graph-edit-overlay '+(addingPoint?'adding-point':'')} viewBox={`0 0 ${style.width} ${style.height}`} aria-label="그래프 직접 편집" role="group" onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={()=>{if(drag.current)cancel();}} onPointerDown={e=>{if(e.target===e.currentTarget)setSelected(null);}}>
      {paths.map(p=>{const t:EditTarget={kind:'curve',curve:p.index};return <path key={p.index} d={p.d} fill="none" stroke="transparent" strokeWidth={16} className={'curve-hit '+(selectedCurve===p.index?'selected':'')} tabIndex={0} role="button" aria-label={addingPoint?`곡선 ${p.index+1}에 점 추가`:`곡선 ${p.index+1} 이동`} onPointerDown={e=>{if(addingPoint){e.preventDefault();return;}begin(e,t);}} onClick={e=>{if(addingPoint)addAtPointer(p.index,e);else setSelected(t);}} onFocus={()=>{if(!addingPoint)setSelected(t);}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setAddingPoint(false);setSelected(t);}else if(!addingPoint)nudge(e,t);}}/>;})}
      {!addingPoint&&current.curves.flatMap((c,ci)=>{const count=c.points.length;const closed=count>2&&equalPoint(c.points[0],c.points[count-1]);return c.points.flatMap((p,pi)=>{
       if(closed&&pi===count-1)return [];
@@ -107,11 +111,12 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
      });})}
      {!addingPoint&&boxes.map(b=>{const t=targetOf(b.id);return <rect key={b.id} x={b.x} y={b.y} width={b.width} height={b.height} rx={3} className={'text-hit '+(selected&&keyOf(selected)===b.id?'selected':'')} tabIndex={0} role="button" aria-label={t.kind==='axis'?`${t.axis==='x'?'가로':'세로'}축 이름 편집`:t.kind==='tick'?`${t.axis==='x'?'가로':'세로'}축 눈금 ${t.index+1} 편집`:`문자 ${t.kind==='label'?t.index+1:''} 이동·편집`} onPointerDown={e=>begin(e,t)} onClick={()=>setSelected(t)} onFocus={()=>setSelected(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelected(t);}else nudge(e,t);}}/>;})}
     </svg>}
+    {active&&drawingRectangle&&<RectangleShadeDraw graph={graph} style={style} snapStep={snap?Number(step):null} onError={setError} onCreate={shade=>{onCommit(graphSchema.parse({...graph,shadings:[...(graph.shadings??[]),shade]}));setDrawingRectangle(false);setInitialShadingIndex(graph.shadings?.length??0);setShadingOpen(true);setError('');}}/>}
    </div>
    {disabled&&<div className="canvas-loading"><Move size={24}/><span>축과 곡선의 관계를 읽고 있습니다</span></div>}
   </div>
   <div className="canvas-caption"><span>{active?'편집 손잡이는 다운로드에 포함되지 않습니다.':'흑백 · 시험지 스타일'}</span><span>{style.width} × {style.height} px</span></div>
-  {active&&inspected&&!addingPoint&&<SelectionEditor graph={inspectorGraph} target={inspected} follow={follow} onCommit={onCommit} onInsert={addPoint} onClose={()=>setSelected(null)}/>}
+  {active&&inspected&&!addingPoint&&!drawingRectangle&&<SelectionEditor graph={inspectorGraph} target={inspected} follow={follow} onCommit={onCommit} onInsert={addPoint} onClose={()=>setSelected(null)}/>}
   {(error||mathErrors.length>0)&&<p role="alert" className="error">{error||`수식 문법을 확인해 주세요: ${mathErrors.join(', ')}`}</p>}
  </>;
 }

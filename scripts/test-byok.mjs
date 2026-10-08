@@ -42,7 +42,10 @@ try{
   const shading=schema.properties.shadings.items;
   assert.equal(shading.additionalProperties,false);
   assert.deepEqual(shading.required,Object.keys(shading.properties));
-  assert.deepEqual(shading.properties.mode.enum,['baseline','between','closed']);
+  assert.deepEqual(shading.properties.mode.enum,['baseline','between','closed','rectangle']);
+  assert.deepEqual(shading.properties.yStart,{type:'number'});
+  assert.deepEqual(shading.properties.yEnd,{type:'number'});
+  assert.ok(shading.required.includes('yStart')&&shading.required.includes('yEnd'));
   assert.deepEqual(shading.properties.pattern.enum,['solid','hatch']);
   assert.deepEqual(shading.properties.opacity,{type:'number',minimum:.05,maximum:.6});
   assert.equal(body.input[0].content[1].type,'input_text');
@@ -64,11 +67,25 @@ try{
   return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(legacyFixture)}]}]});
  };
  assert.deepEqual(await generateOpenAIGraph({prompt:'그래프',current:legacyFixture},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),legacyFixture);
+ const rectangleFixture={...legacyFixture,curves:[],shadings:[{curve:0,otherCurve:0,baseline:0,mode:'rectangle',xStart:.5,xEnd:1.5,yStart:.25,yEnd:1.75,pattern:'solid',opacity:.3}]};
+ globalThis.fetch=async(_url,options)=>{
+  const body=JSON.parse(options.body);
+  const current=JSON.parse(body.input[0].content[1].text.replace(/^Current graph data: /,''));
+  assert.deepEqual(current.curves,[]);
+  assert.deepEqual(current.shadings,rectangleFixture.shadings);
+  return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(rectangleFixture)}]}]});
+ };
+ assert.deepEqual(await generateOpenAIGraph({prompt:'사각형 음영을 유지해 줘',current:rectangleFixture},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),rectangleFixture);
+ for(const bounds of [{yStart:2,yEnd:1},{yStart:undefined},{xStart:2,xEnd:1}]){
+  const invalidRectangle={...rectangleFixture,shadings:[{...rectangleFixture.shadings[0],...bounds}]};
+  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(invalidRectangle)}]}]});
+  await assert.rejects(()=>generateOpenAIGraph({prompt:'사각형 음영'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
+ }
  globalThis.fetch=async()=>Response.json({error:{code:'invalid_api_key'}},{status:401});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/API 키/);
  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:'{"unexpected":true}'}]}]});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({...fixture,curves:[{...fixture.curves[0],lineStyle:'unsupported'}]})}]}]});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
- console.log('PASS: BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, legacy graph request/response, 401 handling, graph validation');
+ console.log('PASS: BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
 }finally{globalThis.fetch=originalFetch;await rm(temp,{recursive:true,force:true});}

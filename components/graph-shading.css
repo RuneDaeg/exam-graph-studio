@@ -17,10 +17,11 @@
 .shading-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .shading-fields>label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:12px;color:var(--muted-foreground)}
 .shading-fields input,.shading-fields select{width:100%;min-width:0;margin:0;font:inherit;font-size:13px;color:var(--foreground);border:1px solid var(--input);border-radius:6px;background:white;padding:8px 10px;min-height:36px}
-.shading-fields select:focus-visible{outline:3px solid var(--focus-outline);outline-offset:2px}
+.shading-fields input:focus-visible,.shading-fields select:focus-visible{outline:3px solid var(--focus-outline);outline-offset:2px}
 .shading-field-wide{grid-column:1/-1}
 .shading-field-wide>input{max-width:calc(50% - 6px)}
 .shading-field-note{font-size:11px;color:var(--muted-foreground);line-height:1.7;margin:0}
+.shading-rectangle-note{margin-top:10px}
 .shading-style-fields{display:flex;align-items:flex-end;gap:24px;flex-wrap:wrap;margin-top:15px}
 .shading-style-fields fieldset{border:0;margin:0;padding:0;min-width:0}
 .shading-style-fields legend{font-size:12px;color:var(--muted-foreground);padding:0;margin-bottom:7px}

@@ -1,4 +1,4 @@
-import {graphSchema, pointOnCurve, type Graph} from './graph';
+import {graphSchema, pointOnCurve, shadingIssue, type Graph, type Shading} from './graph';
 
 export type EditTarget =
  | {kind:'point';curve:number;index:number}
@@ -37,11 +37,21 @@ export function insertCurvePoint(graph:Graph,curve:number,segment:number,t:numbe
 
 export function removeCurve(graph:Graph,index:number):Graph{
  item(graph.curves,index);
- const shadings=graph.shadings?.filter(s=>s.curve!==index&&(s.mode!=='between'||s.otherCurve!==index)).map(s=>({
+ const shadings=graph.shadings?.filter(s=>s.mode==='rectangle'||(s.curve!==index&&(s.mode!=='between'||s.otherCurve!==index))).map(s=>s.mode==='rectangle'?s:({
   ...s,curve:s.curve>index?s.curve-1:s.curve,
   ...(s.otherCurve===undefined?{}:{otherCurve:s.otherCurve===index?0:s.otherCurve>index?s.otherCurve-1:s.otherCurve}),
  }));
  return graphSchema.parse({...graph,curves:graph.curves.filter((_,i)=>i!==index),...(shadings===undefined?{}:{shadings})});
+}
+
+export function createRectangleShading(graph:Graph,a:Point,b:Point):Shading{
+ finite(a.x,a.y,b.x,b.y);
+ if((graph.shadings?.length??0)>=20)throw Error('음영은 20개까지 추가할 수 있습니다.');
+ if(a.x===b.x||a.y===b.y)throw Error('사각형의 가로와 세로에 넓이가 있도록 두 모서리를 선택해 주세요.');
+ const shade:Shading={mode:'rectangle',curve:0,baseline:0,xStart:Math.min(a.x,b.x),xEnd:Math.max(a.x,b.x),yStart:Math.min(a.y,b.y),yEnd:Math.max(a.y,b.y),pattern:'solid',opacity:.15};
+ const issue=shadingIssue(graph,shade);
+ if(issue)throw Error(issue);
+ return shade;
 }
 
 function followAnchors(graph:Graph,movements:Movement[]):Graph{

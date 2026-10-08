@@ -13,7 +13,7 @@ try{
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
  const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
- const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
+ const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  assert.deepEqual(parseCoordinates('(1e-7, -2.5E+2), (+.5, 3.)',true),[{x:1e-7,y:-250},{x:.5,y:3}]);
  assert.deepEqual(parseCoordinates('x축 시간, (0,0), (2,3), 부드러운 곡선'),[{x:0,y:0},{x:2,y:3}],'natural coordinate prompts remain permissive by default');
  assert.throws(()=>parseCoordinates('(0,0), (2,3), (4,',true),/좌표 형식/);
@@ -187,6 +187,48 @@ try{
  assert.equal(graphSchema.safeParse(shaded).success,true);
  assert.equal(graphSchema.safeParse(base).success,true,'existing graphs without shadings remain compatible');
  assert.deepEqual(shaded,shadedOriginal,'shading validation and rendering must not mutate the graph');
+ // Rectangles mark an independent part of the coordinate plane. They need no
+ // curve and retain their own bounds as curves are edited or deleted.
+ const emptyGraph={...base,xMin:-5,xMax:5,yMin:-4,yMax:4,curves:[]};
+ const emptySnapshot=structuredClone(emptyGraph);
+ const rectangle=createRectangleShading(emptyGraph,{x:3,y:2},{x:-2,y:-3});
+ assert.deepEqual(rectangle,{mode:'rectangle',curve:0,baseline:0,xStart:-2,xEnd:3,yStart:-3,yEnd:2,pattern:'solid',opacity:.15});
+ assert.deepEqual(emptyGraph,emptySnapshot,'creating a rectangle must not mutate the graph');
+ assert.deepEqual(createRectangleShading(emptyGraph,{x:-2,y:2},{x:3,y:-3}),rectangle,'all drag directions normalize the same corners');
+ const rectangleGraph={...emptyGraph,shadings:[rectangle]};
+ assert.equal(graphSchema.safeParse(rectangleGraph).success,true,'rectangles are valid without a curve');
+ assert.equal(shadingIssue(rectangleGraph,rectangle),'');
+ const rectLayout=graphLayout(rectangleGraph),rectSvg=renderGraph(rectangleGraph,undefined,'rectangle-test');
+ const rounded=value=>Math.round(value*100)/100;
+ const rectCoordinates=[[-2,-3],[3,-3],[3,2],[-2,2]].map(([x,y])=>`${rounded(rectLayout.X(x))},${rounded(rectLayout.Y(y))}`);
+ assert.ok(rectSvg.includes(`data-shading="0" d="M${rectCoordinates.join(' L')} Z" fill="#151515" fill-rule="evenodd" opacity="0.15"`),'SVG exports use the exact rectangle bounds');
+ assert.ok(rectSvg.indexOf('data-shading="0"')<rectSvg.indexOf('stroke-dasharray="5 4"'),'rectangle shading stays behind guide lines');
+ assert.ok(!rectSvg.includes('data-edit="curve:'),'independent shading does not create a hidden curve');
+ const oversized={...rectangle,xStart:-10,xEnd:7,yStart:-9,yEnd:8,pattern:'hatch'};
+ const oversizedSvg=renderGraph({...rectangleGraph,shadings:[oversized]},undefined,'rectangle-crop');
+ const rectangleClip=oversizedSvg.match(/id="rectangle-crop-shade-clip-0"><rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)"/).slice(1).map(Number);
+ assert.deepEqual(rectangleClip,[rectLayout.L,rectLayout.T,rectLayout.R-rectLayout.L,rectLayout.B-rectLayout.T],'rectangles are clipped to the full axis viewport on both axes');
+ assert.ok(oversizedSvg.includes('fill="url(#rectangle-crop-shade-hatch-0)"'),'independent rectangles support hatch fills');
+ assert.deepEqual(createRectangleShading(emptyGraph,{x:-10,y:-9},{x:7,y:8}),{...oversized,pattern:'solid'},'partly visible rectangles keep their world bounds instead of changing with the viewport');
+ const beyondCurve={...rectangle,xStart:4.2,xEnd:4.8,yStart:2.5,yEnd:3.5};
+ assert.equal(shadingIssue({...emptyGraph,curves:base.curves},beyondCurve),'','rectangle bounds may extend beyond every curve');
+ for(const invalid of [
+  {...rectangle,yStart:undefined},{...rectangle,yEnd:undefined},{...rectangle,yStart:NaN},{...rectangle,yEnd:Infinity},
+  {...rectangle,yStart:2,yEnd:2},{...rectangle,yStart:3,yEnd:2},{...rectangle,xStart:3,xEnd:3},{...rectangle,xStart:4,xEnd:3},
+ ]){
+  assert.equal(graphSchema.safeParse({...emptyGraph,shadings:[invalid]}).success,false,'malformed rectangle bounds must not enter saved graph documents');
+  assert.ok(shadingIssue(emptyGraph,invalid));
+  assert.ok(!renderGraph({...emptyGraph,shadings:[invalid]}).includes('data-shading='),'invalid rectangle rendering safely skips the shade');
+ }
+ for(const outside of [{...rectangle,xStart:5,xEnd:6},{...rectangle,xStart:-7,xEnd:-5},{...rectangle,yStart:4,yEnd:5},{...rectangle,yStart:-6,yEnd:-4}]){
+  assert.match(shadingIssue(emptyGraph,outside),/축 범위와 겹쳐/,'touching the viewport boundary alone is not a visible rectangle');
+  assert.ok(!renderGraph({...emptyGraph,shadings:[outside]}).includes('data-shading='));
+ }
+ for(const [a,b] of [[{x:1,y:1},{x:1,y:3}],[{x:1,y:1},{x:3,y:1}],[{x:NaN,y:1},{x:3,y:2}],[{x:0,y:0},{x:Infinity,y:2}],[{x:6,y:1},{x:8,y:3}],[{x:0,y:0},{x:1000001,y:3}]])assert.throws(()=>createRectangleShading(emptyGraph,a,b));
+ assert.throws(()=>createRectangleShading({...emptyGraph,shadings:Array(20).fill(rectangle)},{x:0,y:0},{x:1,y:1}),/20개/);
+ assert.deepEqual(removeCurve({...base,shadings:[rectangle,shade]},0).shadings,[rectangle],'deleting the last curve preserves independent rectangles');
+ const indexedRectangle={...rectangle,curve:2,otherCurve:1};
+ assert.deepEqual(removeCurve({...base,curves:[...base.curves,...base.curves,...base.curves],shadings:[indexedRectangle]},0).shadings,[indexedRectangle],'ignored rectangle curve placeholders must not be reindexed');
  const removeFixture={...between,curves:[...between.curves,connection.curves[0]],shadings:[shade,{...shade,curve:2},{...shade,curve:1,mode:'between',otherCurve:2},{...shade,mode:'between',otherCurve:2}]};
  const removeOriginal=structuredClone(removeFixture),removed=removeCurve(removeFixture,0);
  assert.equal(removed.curves.length,2);
