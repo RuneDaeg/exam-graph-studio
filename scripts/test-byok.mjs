@@ -17,7 +17,7 @@ try{
  const {presets}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const legacyFixture=presets[0].graph;
  const lineStyles=['solid','dashed','dotted','dash-dot','dash-dot-dot'];
- const fixture={...legacyFixture,curves:lineStyles.map((lineStyle,i)=>({...legacyFixture.curves[0],name:`선 ${i+1}`,lineStyle,distribution:null,dashed:lineStyle!=='solid'})),shadings:[{curve:0,mode:'baseline',otherCurve:0,baseline:0,xStart:1,xEnd:3,pattern:'hatch',opacity:.2}]};
+ const fixture={...legacyFixture,equalAxes:false,curves:lineStyles.map((lineStyle,i)=>({...legacyFixture.curves[0],name:`선 ${i+1}`,lineStyle,distribution:null,conic:null,dashed:lineStyle!=='solid'})),shadings:[{curve:0,mode:'baseline',otherCurve:0,baseline:0,xStart:1,xEnd:3,pattern:'hatch',opacity:.2}]};
  let calls=0;
  globalThis.fetch=async(url,options)=>{
   calls++;
@@ -44,6 +44,17 @@ try{
   assert.deepEqual(gamma.required,['kind','origin','peak','height','power','baseline','end']);
   assert.deepEqual(gamma.properties.kind,{type:'string',enum:['gamma']});
   assert.deepEqual(gamma.properties.power,{type:'number',minimum:2,maximum:80});
+  assert.ok(curve.required.includes('conic'));
+  const [conic,noConic]=curve.properties.conic.anyOf;
+  assert.deepEqual(noConic,{type:'null'});
+  assert.equal(conic.additionalProperties,false);
+  assert.deepEqual(conic.required,['kind','cx','cy','rx','ry']);
+  assert.deepEqual(conic.properties.kind,{type:'string',enum:['circle','ellipse']});
+  assert.ok(schema.required.includes('equalAxes'));
+  assert.deepEqual(schema.properties.equalAxes,{type:'boolean'});
+  assert.ok(body.instructions.includes('conic:{kind:"circle",cx:0,cy:0,rx:2,ry:2}'));
+  assert.ok(body.instructions.includes('parametric paths'));
+  assert.ok(!body.instructions.includes('smooth is true only for sparse'));
   assert.ok(schema.required.includes('shadings'));
   assert.equal(schema.properties.shadings.maxItems,20);
   const shading=schema.properties.shadings.items;
@@ -59,6 +70,7 @@ try{
   const current=JSON.parse(body.input[0].content[1].text.replace(/^Current graph data: /,''));
   assert.deepEqual(current.curves,fixture.curves);
   assert.deepEqual(current.shadings,fixture.shadings);
+  assert.equal(current.equalAxes,false);
   assert.equal(body.input[0].content[2].type,'input_image');
   return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(fixture)}]}]});
  };
@@ -72,6 +84,8 @@ try{
   assert.deepEqual(current.curves,legacyFixture.curves);
   assert.ok(current.curves.every(curve=>!Object.hasOwn(curve,'lineStyle')));
   assert.ok(current.curves.every(curve=>!Object.hasOwn(curve,'distribution')));
+  assert.ok(current.curves.every(curve=>!Object.hasOwn(curve,'conic')));
+  assert.ok(!Object.hasOwn(current,'equalAxes'));
   return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(legacyFixture)}]}]});
  };
  assert.deepEqual(await generateOpenAIGraph({prompt:'그래프',current:legacyFixture},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),legacyFixture);
@@ -105,6 +119,49 @@ try{
   globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(value)}]}]});
   await assert.rejects(()=>generateOpenAIGraph({prompt:'감마 모양 분포'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  }
+ // Formula metadata from an AI response must generate a true closed circle;
+ // retaining a few inaccurate AI-supplied points would reproduce the original bug.
+ const circle={kind:'circle',cx:0,cy:0,rx:2,ry:2};
+ const conicCurve={...fixture.curves[0],conic:circle,distribution:null,smooth:false,dots:false,arrows:false,points:[{x:0,y:0},{x:1,y:0},{x:1,y:1}]};
+ const circleShade={curve:0,otherCurve:0,baseline:0,mode:'closed',xStart:-2,xEnd:2,yStart:0,yEnd:0,pattern:'solid',opacity:.15};
+ const circleFixture={...legacyFixture,equalAxes:true,xMin:-2.5,xMax:2.5,yMin:-2.5,yMax:2.5,curves:[conicCurve],shadings:[circleShade]};
+ globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(circleFixture)}]}]});
+ const circleResult=await generateOpenAIGraph({prompt:'x^2+y^2=4 원과 내부 15% 음영'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.equal(circleResult.equalAxes,true);
+ assert.deepEqual(circleResult.curves[0].conic,circle);
+ assert.deepEqual(circleResult.shadings,[circleShade]);
+ assert.equal(circleResult.curves[0].smooth,true);
+ const circlePoints=circleResult.curves[0].points;
+ assert.ok(circlePoints.length>=5&&circlePoints.length<=500);
+ assert.deepEqual(circlePoints[0],circlePoints.at(-1));
+ assert.notDeepEqual(circlePoints,conicCurve.points);
+ for(const point of circlePoints)assert.ok(Math.abs(Math.hypot(point.x,point.y)-2)<1e-10);
+ globalThis.fetch=async(_url,options)=>{
+  const body=JSON.parse(options.body);
+  const current=JSON.parse(body.input[0].content[1].text.replace(/^Current graph data: /,''));
+  assert.deepEqual(current,circleResult);
+  return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(current)}]}]});
+ };
+ assert.deepEqual(await generateOpenAIGraph({prompt:'원의 모양과 음영을 유지해 줘',current:circleResult},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),circleResult);
+ const ellipse={kind:'ellipse',cx:1,cy:-1,rx:3,ry:1};
+ const ellipseFixture={...circleFixture,xMin:-3,xMax:5,yMin:-3,yMax:2,curves:[{...conicCurve,conic:ellipse}],shadings:[]};
+ globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(ellipseFixture)}]}]});
+ const ellipseResult=await generateOpenAIGraph({prompt:'중심 (1,-1), 반지름 3,1인 타원'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.equal(ellipseResult.equalAxes,true);
+ assert.deepEqual(ellipseResult.curves[0].conic,ellipse);
+ for(const point of ellipseResult.curves[0].points)assert.ok(Math.abs(((point.x-ellipse.cx)/ellipse.rx)**2+((point.y-ellipse.cy)/ellipse.ry)**2-1)<1e-10);
+ for(const invalid of [{kind:'parabola'},{rx:0},{ry:-1},{ry:3},{cx:999999},{cy:-999999},{rx:1000001,ry:1000001}]){
+  const value={...circleFixture,curves:[{...conicCurve,conic:{...circle,...invalid}}]};
+  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(value)}]}]});
+  await assert.rejects(()=>generateOpenAIGraph({prompt:'원'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
+ }
+ for(const value of [
+  {...circleFixture,equalAxes:'true'},
+  {...circleFixture,curves:[{...conicCurve,distribution:gamma}]},
+ ]){
+  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(value)}]}]});
+  await assert.rejects(()=>generateOpenAIGraph({prompt:'원'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
+ }
  const rectangleFixture={...legacyFixture,curves:[],shadings:[{curve:0,otherCurve:0,baseline:0,mode:'rectangle',xStart:.5,xEnd:1.5,yStart:.25,yEnd:1.75,pattern:'solid',opacity:.3}]};
  globalThis.fetch=async(_url,options)=>{
   const body=JSON.parse(options.body);
@@ -125,5 +182,5 @@ try{
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({...fixture,curves:[{...fixture.curves[0],lineStyle:'unsupported'}]})}]}]});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
- console.log('PASS: BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, gamma metadata and canonical samples, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
+ console.log('PASS: BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, circle/ellipse metadata and canonical closed samples, equal-axis refinement, conic bounds and family exclusion, gamma metadata and canonical samples, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
 }finally{globalThis.fetch=originalFetch;await rm(temp,{recursive:true,force:true});}

@@ -12,8 +12,8 @@ try{
   const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
- const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray,distributionValue,withDistribution,freeDistribution,distributionPeakIndex}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
- const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading,updateDistribution}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
+ const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray,distributionValue,withDistribution,freeDistribution,distributionPeakIndex,withConic,freeConic,conicHandleIndices}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
+ const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading,updateDistribution,updateConic}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  assert.deepEqual(parseCoordinates('(1e-7, -2.5E+2), (+.5, 3.)',true),[{x:1e-7,y:-250},{x:.5,y:3}]);
  assert.deepEqual(parseCoordinates('x축 시간, (0,0), (2,3), 부드러운 곡선'),[{x:0,y:0},{x:2,y:3}],'natural coordinate prompts remain permissive by default');
  assert.throws(()=>parseCoordinates('(0,0), (2,3), (4,',true),/좌표 형식/);
@@ -98,11 +98,15 @@ try{
   [...connectionPoints,connectionPoints[0]],
  ]){
   const snapshot=structuredClone(points);
-  assert.match(smoothConnectionIssue(points),/왼쪽부터/);
+  assert.equal(smoothConnectionIssue(points),'');
   assert.deepEqual(points,snapshot,'eligibility must not reorder a path');
-  const fallback={...connection,curves:[{...connection.curves[0],points,smooth:true}]};
-  assert.equal(curvePath(fallback),curvePath({...fallback,curves:[{...fallback.curves[0],smooth:false}]}),'unsupported paths retain their original straight connections');
+  const parametric={...connection,curves:[{...connection.curves[0],points,smooth:true}]};
+  assert.ok(curvePath(parametric).includes(' C'),'vertical, reversed and closed curves use parametric interpolation');
+  assert.ok(!curvePath(parametric).includes(' L'));
+  assert.notEqual(curvePath(parametric),curvePath({...parametric,curves:[{...parametric.curves[0],smooth:false}]}));
  }
+ assert.match(smoothConnectionIssue([{x:0,y:0},{x:0,y:0},{x:2,y:3}]),/연속/);
+ assert.match(smoothConnectionIssue([{x:0,y:0},{x:1,y:2},{x:0,y:0}]),/서로 다른/);
  for(const value of [NaN,Infinity,-Infinity]){
   assert.match(smoothConnectionIssue([{x:0,y:0},{x:1,y:value},{x:2,y:0}]),/숫자/);
   assert.match(smoothConnectionIssue([{x:0,y:0},{x:value,y:1},{x:2,y:0}]),/숫자/);
@@ -280,6 +284,129 @@ try{
   assert.deepEqual(next.curves[0].points.at(-1),{x:1.2,y:1.3});
  }
  assert.deepEqual(pv,pvOriginal);
+
+ // Formula conics keep circles circular at every canvas aspect ratio. Both
+ // stroke and shading use the same tangent-matched analytic Bézier arcs.
+ const circleModel={kind:'circle',cx:0,cy:0,rx:2,ry:2};
+ const circleCurve=withConic({...base.curves[0],points:[{x:99,y:99}],lineStyle:'dash-dot'},circleModel);
+ const circleGraph=graphSchema.parse({...base,xMin:-3,xMax:3,yMin:-3,yMax:3,curves:[circleCurve],guides:[],labels:[],shadings:[{...closedShade,opacity:.15}]});
+ const circleSnapshot=structuredClone(circleGraph);
+ assert.equal(circleCurve.points.length,17);
+ assert.equal(circleCurve.smooth,true);
+ assert.deepEqual(conicHandleIndices(circleCurve),[0,4,8,12]);
+ assert.deepEqual(circleCurve.points.filter((_,i)=>[0,4,8,12].includes(i)),[{x:2,y:0},{x:0,y:2},{x:-2,y:0},{x:0,y:-2}]);
+ assert.deepEqual(circleCurve.points.at(-1),circleCurve.points[0]);
+ assert.equal(circleGraph.equalAxes,undefined,'axis policy remains optional in stored documents');
+ assert.deepEqual(graphSchema.parse({...circleGraph,curves:[{...circleCurve,points:[{x:0,y:0}],smooth:false}]}),circleGraph,'conic parameters replace stale polygon samples');
+ assert.deepEqual(graphSchema.parse(JSON.parse(JSON.stringify(circleGraph))),circleGraph);
+ for(const patch of [{kind:'parabola'},{rx:0},{ry:-1},{rx:Infinity},{cx:NaN},{ry:3},{cx:999999},{cy:-999999},{cx:99999,rx:1e-20,ry:1e-20}]){
+  assert.equal(graphSchema.safeParse({...circleGraph,curves:[{...circleCurve,conic:{...circleModel,...patch}}]}).success,false,'invalid conic metadata cannot be saved');
+ }
+ assert.equal(graphSchema.safeParse({...circleGraph,curves:[{...circleCurve,distribution:{kind:'gamma',origin:0,peak:1,height:1,power:3,baseline:0,end:3}}]}).success,false);
+ assert.equal(graphSchema.parse({...base,curves:[{...base.curves[0],conic:null}]}).curves[0].conic,null);
+ for(const equalAxes of [null,0,'true'])assert.equal(graphSchema.safeParse({...base,equalAxes}).success,false);
+ const ellipseModel={kind:'ellipse',cx:1,cy:-.5,rx:2,ry:.7};
+ for(const model of [circleModel,ellipseModel]){
+  const c=withConic(circleCurve,model),graph={...circleGraph,curves:[c]};
+  for(let segment=0;segment<16;segment++)for(const t of [0,.1,.25,.5,.75,.9,1]){
+   const p=pointOnCurve(c,segment,t),radius=Math.hypot((p.x-model.cx)/model.rx,(p.y-model.cy)/model.ry);
+   assert.ok(Math.abs(radius-1)<7e-8,'analytic arc radius agrees with the circle/ellipse equation between knots');
+   const nearest=nearestCurvePosition(c,p,93,93);
+   assert.ok(nearest.distance<1e-6,'hit testing uses the actual conic arc');
+  }
+  const svg=renderGraph(graph),stroke=curvePath(graph),fill=svg.match(/data-shading="0" d="([^"]+)"/)?.[1];
+  assert.equal((stroke.match(/ C/g)||[]).length,16);
+  assert.ok(!stroke.includes(' L'));
+  assert.equal(fill,stroke+' Z','closed fill and conic stroke share exactly the same path');
+  assert.ok(svg.includes('opacity="0.15"'));
+  assert.ok(!/NaN|Infinity/.test(svg));
+  assert.ok(mainStroke(svg).includes('stroke-dasharray="10 5 0 5"'));
+  const annotated={...graph,curves:[{...c,dots:true,arrows:true}]};
+  assert.equal((renderGraph(annotated).match(/<circle /g)||[]).length,4,'conic markers show cardinal handles instead of sample points');
+  assert.equal(curveArrows(annotated).length,4);
+ }
+ for(const style of [defaultStyle,{...defaultStyle,width:1200,height:400},{...defaultStyle,width:400,height:900}]){
+  const layout=graphLayout(circleGraph,style);
+  assert.ok(Math.abs(layout.dx-layout.dy)<1e-12,'an x unit and a y unit must occupy equal screen lengths');
+  assert.ok(Math.abs(layout.X(2)-layout.X(-2)-(layout.Y(-2)-layout.Y(2)))<1e-10,'circle diameter stays equal on both axes');
+  assert.ok(layout.L>=0&&layout.R<=style.width&&layout.T>=0&&layout.B<=style.height);
+  for(const p of [{x:-3,y:3},{x:2,y:-1},{x:0,y:0}]){
+   const inverse=layout.world(layout.X(p.x),layout.Y(p.y));
+   assert.ok(Math.abs(inverse.x-p.x)<1e-12&&Math.abs(inverse.y-p.y)<1e-12,'screen/world conversion is consistent with letterboxing');
+  }
+  const svg=renderGraph(circleGraph,style,'circle-layout');
+  const clip=svg.match(/id="circle-layout-shade-clip-0"><rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)"/).slice(1).map(Number);
+  assert.deepEqual(clip,[layout.L,layout.T,layout.R-layout.L,layout.B-layout.T]);
+ }
+ const unrestricted=graphLayout({...circleGraph,equalAxes:false});
+ assert.notEqual(unrestricted.dx,unrestricted.dy,'explicit independent axes override conic defaults');
+ const fixedOrdinary=graphLayout({...base,equalAxes:true});
+ assert.ok(Math.abs(fixedOrdinary.dx-fixedOrdinary.dy)<1e-12,'equal units are also available to ordinary graphs');
+ const ordinaryLayout=graphLayout(base);
+ assert.notEqual(ordinaryLayout.dx,ordinaryLayout.dy,'legacy graphs retain their independent axis scales');
+ const tinyAxisLayout=graphLayout({...base,equalAxes:true,xMin:-1e-30,xMax:1e-30});
+ assert.ok(tinyAxisLayout.dx>0&&Number.isFinite(tinyAxisLayout.dx)&&tinyAxisLayout.dx===tinyAxisLayout.dy,'subpixel fitted axis widths retain a finite common scale');
+ assert.ok(Object.values(tinyAxisLayout.world(tinyAxisLayout.L,tinyAxisLayout.B)).every(Number.isFinite));
+ for(const [index,x,y,expected] of [[0,1,2,1],[4,1,1,1],[8,-1,2,1],[12,2,-1,1]]){
+  const resized=movePoint(circleGraph,0,index,x,y);
+  assert.deepEqual(resized.curves[0].conic,{...circleModel,rx:expected,ry:expected},'all four handles adjust a circle radius without deforming it');
+  assert.deepEqual(resized.shadings,circleGraph.shadings);
+ }
+ for(const [index,p] of circleCurve.points.entries()){
+  if(conicHandleIndices(circleCurve).includes(index))assert.deepEqual(movePoint(circleGraph,0,index,p.x,p.y),circleGraph,'conic no-op edits are stable');
+  else assert.throws(()=>movePoint(circleGraph,0,index,p.x,p.y),/자유 곡선/);
+ }
+ assert.equal(movePoint(circleGraph,0,0,100,100).curves[0].conic.rx,3,'radius is clamped to the full visible circle');
+ assert.ok(movePoint(circleGraph,0,0,-100,0).curves[0].conic.rx>0,'handles cannot invert a radius');
+ const ellipseGraph={...circleGraph,curves:[withConic(circleCurve,ellipseModel)]};
+ assert.deepEqual(movePoint(ellipseGraph,0,0,2.5,99).curves[0].conic,{...ellipseModel,rx:1.5},'ellipse horizontal handles only change rx');
+ assert.deepEqual(movePoint(ellipseGraph,0,4,99,1.5).curves[0].conic,{...ellipseModel,ry:2},'ellipse vertical handles only change ry');
+ const translatedCircle=moveCurve(circleGraph,0,100,-100);
+ assert.deepEqual(translatedCircle.curves[0].conic,{...circleModel,cx:1,cy:-1});
+ assert.deepEqual(translatedCircle.shadings,circleGraph.shadings);
+ assert.throws(()=>moveCurve({...circleGraph,xMin:-1,xMax:1},0,0,0),/축 범위/);
+ const followedCircle=moveCurve({...circleGraph,labels:[{x:2,y:0,text:'R',dx:4,dy:5}],guides:[{x1:0,y1:0,x2:2,y2:0}]},0,.5,.5,true);
+ assert.deepEqual(followedCircle.labels[0],{x:2.5,y:.5,text:'R',dx:4,dy:5});
+ assert.deepEqual(followedCircle.guides[0],{x1:0,y1:.5,x2:2.5,y2:.5});
+ assert.throws(()=>insertCurvePoint(circleGraph,0,0,.5),/자유 곡선/);
+ assert.throws(()=>updateConic(base,0,{rx:2}),/먼저 선택/);
+ assert.throws(()=>updateConic(circleGraph,0,{rx:3}),/반지름/);
+ assert.deepEqual(updateConic(circleGraph,0,{kind:'ellipse',ry:1}).curves[0].conic,{...circleModel,kind:'ellipse',ry:1});
+ const freeCircle=freeConic(circleCurve);
+ assert.equal(freeCircle.conic,undefined);
+ assert.deepEqual(freeCircle.points,circleCurve.points);
+ assert.equal(freeCircle.smooth,true);
+ assert.equal(insertCurvePoint({...circleGraph,curves:[freeCircle]},0,2,.5).graph.curves[0].points.length,18);
+ assert.deepEqual(circleGraph,circleSnapshot,'conic drawing and edits do not mutate source documents');
+
+ // Non-function paths need continuous parametric tangents at every knot,
+ // including a periodic closed seam. Existing straight polygons stay straight.
+ const loopPoints=[{x:2,y:0},{x:1.2,y:1.5},{x:-1,y:2},{x:-2,y:-.5},{x:0,y:-1.5},{x:2,y:0}];
+ const loop={...base.curves[0],points:loopPoints,smooth:true};
+ const derivative=(curve,segment,end)=>{
+  const p=[0,1/3,2/3,1].map(t=>pointOnCurve(curve,segment,t));
+  const slope=axis=>end?(11*p[3][axis]-18*p[2][axis]+9*p[1][axis]-2*p[0][axis])/2:(-11*p[0][axis]+18*p[1][axis]-9*p[2][axis]+2*p[3][axis])/2;
+  return {x:slope('x'),y:slope('y')};
+ };
+ for(let i=0;i<loop.points.length-1;i++){
+  const incoming=derivative(loop,(i+loop.points.length-2)%(loop.points.length-1),true),outgoing=derivative(loop,i,false);
+  const product=Math.hypot(incoming.x,incoming.y)*Math.hypot(outgoing.x,outgoing.y);
+  assert.ok(Math.abs(incoming.x*outgoing.y-incoming.y*outgoing.x)/product<1e-12,'closed tangents join in the same direction without a seam kink');
+  assert.ok(incoming.x*outgoing.x+incoming.y*outgoing.y>0);
+  assert.deepEqual(pointOnCurve(loop,i,0),loop.points[i]);
+  assert.deepEqual(pointOnCurve(loop,i,1),loop.points[i+1]);
+ }
+ for(const segment of [0,2,4]){
+  const p=pointOnCurve(loop,segment,.37),nearest=nearestCurvePosition(loop,p,51,88);
+  assert.equal(nearest.segment,segment);
+  assert.ok(Math.abs(nearest.t-.37)<1e-8);
+  const added=insertCurvePoint({...circleGraph,curves:[loop]},0,segment,.37);
+  assert.deepEqual(added.graph.curves[0].points[segment+1],p);
+  assert.deepEqual(added.graph.curves[0].points[0],added.graph.curves[0].points.at(-1),'insertion retains the periodic closing point');
+ }
+ assert.equal(curvePath(pv).includes(' C'),false,'existing P–V polygons remain straight unless smoothing is selected');
+ const loopGraph={...circleGraph,curves:[loop]};
+ assert.ok(renderGraph(loopGraph).includes(`data-shading="0" d="${curvePath(loopGraph)} Z"`),'general closed curves share their smoothed fill boundary');
 
  const modeledDistribution=structuredClone(presets.find(p=>p.id==='distribution').graph);
  const modeledOriginal=structuredClone(modeledDistribution);
@@ -491,5 +618,5 @@ try{
  assert.throws(()=>adjustText(fixture,{kind:'point',curve:0,index:0},'A'));
  assert.deepEqual(fixture,fixtureOriginal);
  for(const graph of [clamped,shifted,backwards,followed,followedCurve,labelMove])assert.equal(graphSchema.safeParse(graph).success,true);
- console.log('PASS: analytic gamma values, derivative continuity and adaptive sampling, immutable formula edits and conversion, five line styles and legacy compatibility across widths, shading boundaries and clipping, immutable insertion and nearest cubic points, curve deletion references, connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
+ console.log('PASS: analytic circle/ellipse arcs and shared shading, equal-axis layout and inverse dragging, conic resize/translation/conversion, periodic smooth paths and insertion, analytic gamma values, derivative continuity and adaptive sampling, immutable formula edits and conversion, five line styles and legacy compatibility across widths, shading boundaries and clipping, immutable insertion and nearest cubic points, curve deletion references, connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
 }finally{await rm(temp,{recursive:true,force:true});}

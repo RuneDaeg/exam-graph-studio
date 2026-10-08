@@ -1,0 +1,17 @@
+.conic-start{border-top:1px solid var(--border);padding-top:12px;margin:12px 0;font-size:12px}
+.conic-start .button{font-size:12px;min-height:34px;padding:7px 10px}
+.conic-start p,.conic-hint{font-size:11px;line-height:1.7;color:var(--muted-foreground);margin:7px 0 0}
+.conic-controls{min-width:0;width:100%;border:1px solid var(--border-active);border-radius:8px;padding:12px;margin:14px 0;background:var(--surface-tint)}
+.conic-controls legend{font-size:12px;color:var(--primary);padding:0 5px;font-weight:650}
+.conic-formula{overflow-x:auto;max-width:100%;margin:12px 0 0;padding:3px 0 5px;font-size:12px;color:var(--foreground)}
+.conic-formula .katex{font-size:1.1em}
+.conic-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.conic-fields>label{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:11px;color:var(--muted-foreground)}
+.conic-fields input,.conic-fields select{width:100%;min-width:0;font:inherit;font-size:13px;color:var(--foreground);background:white;border:1px solid var(--input);border-radius:6px;padding:8px;min-height:35px}
+.conic-fields input:focus-visible,.conic-fields select:focus-visible{outline:3px solid var(--focus-outline);outline-offset:2px}
+.conic-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-top:13px}
+.conic-actions .button{font-size:11px;min-height:34px;padding:7px 10px}
+.conic-error{font-size:11px;line-height:1.6;color:#9a3939;margin:10px 0 0}
+.equal-axes-control{display:flex;align-items:center;gap:8px;font-size:13px;margin:16px 0 6px}
+.equal-axes-control input{accent-color:var(--primary)}
+@media(max-width:480px){.conic-controls{padding:10px}.conic-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.conic-formula{font-size:11px}.conic-actions{justify-content:flex-start}}

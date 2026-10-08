@@ -21,6 +21,6 @@ export function CurveConnection({ points, smooth, onChange }: Props) {
         {value ? '매끄러운 곡선' : '직선'}
       </label>)}
     </div>
-    <p id={`${id}-hint`}>{issue ? `${smooth && points ? '현재 좌표는 직선으로 표시됩니다. ' : ''}${issue}` : (smooth ? '선택한 선의 모든 점을 지나도록 매끄럽게 연결합니다.' : '선택한 선의 점과 점 사이를 직선으로 연결합니다.')}</p>
+    <p id={`${id}-hint`}>{issue ? `${smooth && points ? '현재 좌표는 직선으로 표시됩니다. ' : ''}${issue}` : (smooth ? '점의 순서대로 매끄럽게 연결합니다. 닫힌 곡선과 되돌아가는 선도 연결할 수 있습니다.' : '선택한 선의 점과 점 사이를 직선으로 연결합니다.')}</p>
   </fieldset>;
 }

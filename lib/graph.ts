@@ -7,7 +7,28 @@ const distributionSchema=z.object({kind:z.literal('gamma'),origin:num,peak:num,h
  if(model.baseline+model.height>1000000)ctx.addIssue({code:z.ZodIssueCode.custom,path:['height'],message:'기준 높이와 분포 높이의 합은 1,000,000 이하여야 합니다.'});
 });
 export type Distribution=z.infer<typeof distributionSchema>;
+const conicSchema=z.object({kind:z.enum(['circle','ellipse']),cx:num,cy:num,rx:num.positive(),ry:num.positive()}).superRefine((model,ctx)=>{
+ if(model.kind==='circle'&&model.rx!==model.ry)ctx.addIssue({code:z.ZodIssueCode.custom,path:['ry'],message:'원의 가로·세로 반지름은 같아야 합니다.'});
+ for(const [center,radius] of [['cx','rx'],['cy','ry']] as const){
+  if(model[center]-model[radius]<-1000000||model[center]+model[radius]>1000000)ctx.addIssue({code:z.ZodIssueCode.custom,path:[radius],message:'원·타원의 전체 좌표는 -1,000,000부터 1,000,000까지 입력해 주세요.'});
+  if(model[center]-model[radius]===model[center]||model[center]+model[radius]===model[center])ctx.addIssue({code:z.ZodIssueCode.custom,path:[radius],message:'중심 좌표에서 구분할 수 있는 크기의 반지름을 입력해 주세요.'});
+ }
+});
+export type Conic=z.infer<typeof conicSchema>;
 type DistributionPoint={x:number;y:number};
+function sampleConic(model:Conic):DistributionPoint[]{
+ const points=Array.from({length:16},(_,i)=>{
+  // Cardinal points are exact; in particular the closing point must be
+  // identical, not the tiny sine residual produced at 2π.
+  if(i===0)return {x:model.cx+model.rx,y:model.cy};
+  if(i===4)return {x:model.cx,y:model.cy+model.ry};
+  if(i===8)return {x:model.cx-model.rx,y:model.cy};
+  if(i===12)return {x:model.cx,y:model.cy-model.ry};
+  const angle=i*Math.PI/8;
+  return {x:model.cx+model.rx*Math.cos(angle),y:model.cy+model.ry*Math.sin(angle)};
+ });
+ return [...points,{...points[0]}];
+}
 export function distributionValue(model:Distribution,x:number):number{
  if(x<=model.origin)return model.baseline;
  if(x===model.peak)return model.baseline+model.height;
@@ -70,10 +91,12 @@ const shading = z.object({curve:z.number().int().min(0).max(11),mode:z.enum(['ba
  if(shade.xStart>=shade.xEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['xEnd'],message:'사각형의 가로 끝은 시작보다 커야 합니다.'});
  if(shade.yStart===undefined||shade.yEnd===undefined||shade.yStart>=shade.yEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['yEnd'],message:'사각형의 세로 시작과 끝을 입력하고 끝을 더 크게 설정해 주세요.'});
 });
-const curveSchema=z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean(),distribution:distributionSchema.nullable().optional()}).transform(curve=>curve.distribution?{...curve,points:sampleDistribution(curve.distribution),smooth:true}:curve);
+const curveSchema=z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean(),distribution:distributionSchema.nullable().optional(),conic:conicSchema.nullable().optional()})
+ .refine(curve=>!(curve.distribution&&curve.conic),{path:['conic'],message:'한 선에는 분포 공식과 원·타원 공식을 함께 적용할 수 없습니다.'})
+ .transform(curve=>curve.distribution?{...curve,points:sampleDistribution(curve.distribution),smooth:true}:curve.conic?{...curve,points:sampleConic(curve.conic),smooth:true}:curve);
 export const graphSchema = z.object({
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
- xMin:num,xMax:num,yMin:num,yMax:num,
+ xMin:num,xMax:num,yMin:num,yMax:num,equalAxes:z.boolean().optional(),
  xTicks:z.array(tick).max(30),yTicks:z.array(tick).max(30),
  curves:z.array(curveSchema).max(12),
  shadings:z.array(shading).max(20).optional(),
@@ -87,7 +110,7 @@ export type Shading = NonNullable<Graph['shadings']>[number];
 type Curve = Graph['curves'][number];
 type Point = Curve['points'][number];
 export function withDistribution(curve:Curve,model:Distribution):Curve{
- return curveSchema.parse({...curve,distribution:model});
+ return curveSchema.parse({...curve,conic:null,distribution:model});
 }
 export function freeDistribution(curve:Curve):Curve{
  const {distribution:_,...free}=curve;
@@ -95,6 +118,16 @@ export function freeDistribution(curve:Curve):Curve{
 }
 export function distributionPeakIndex(curve:Curve):number{
  return curve.distribution?curve.points.findIndex(p=>p.x===curve.distribution!.peak):-1;
+}
+export function withConic(curve:Curve,model:Conic):Curve{
+ return curveSchema.parse({...curve,distribution:null,conic:model});
+}
+export function freeConic(curve:Curve):Curve{
+ const {conic:_,...free}=curve;
+ return free;
+}
+export function conicHandleIndices(curve:Curve):number[]{
+ return curve.conic?[0,4,8,12]:[];
 }
 type Segment = {from:Point;to:Point;c1?:Point;c2?:Point};
 export function curveLineStyle(curve:Pick<Curve,'lineStyle'|'dashed'>):LineStyle{
@@ -111,8 +144,37 @@ export function lineDashArray(style:LineStyle,width:number):string|undefined{
 export function smoothConnectionIssue(points:Graph['curves'][number]['points']):string{
  if(points.length<3)return '매끄러운 곡선에는 점이 3개 이상 필요합니다.';
  if(points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))return '좌표에 유한한 숫자를 입력해 주세요.';
- if(points.some((p,i)=>i>0&&p.x<=points[i-1].x))return '수직선이나 닫힌 경로는 직선 연결을 사용합니다. 곡선으로 연결하려면 점을 왼쪽부터 순서대로 배치해 주세요.';
+ if(points.some((p,i)=>i>0&&p.x===points[i-1].x&&p.y===points[i-1].y))return '같은 위치의 점이 연속으로 있으면 곡선을 연결할 수 없습니다.';
+ if(points.length===3&&points[0].x===points[2].x&&points[0].y===points[2].y)return '닫힌 곡선에는 서로 다른 점이 3개 이상 필요합니다.';
  return '';
+}
+
+function parametricSegments(points:Point[]):Segment[]{
+ const closed=points[0].x===points.at(-1)!.x&&points[0].y===points.at(-1)!.y;
+ const knots=closed?points.slice(0,-1):points;
+ const neighbor=(index:number):Point=>{
+  if(closed)return knots[(index+knots.length)%knots.length];
+  if(index<0)return {x:2*knots[0].x-knots[1].x,y:2*knots[0].y-knots[1].y};
+  if(index>=knots.length){const last=knots.length-1;return {x:2*knots[last].x-knots[last-1].x,y:2*knots[last].y-knots[last-1].y};}
+  return knots[index];
+ };
+ return points.slice(1).map((to,i)=>{
+  const from=points[i],before=neighbor(i-1),after=neighbor(i+2);
+  // Centripetal Catmull–Rom uses chord-length square roots as its parameter.
+  // Unlike an x-only interpolant this handles vertical tangents, loops and
+  // paths that double back, with the same tangent on both sides of a seam.
+  const a=Math.sqrt(Math.hypot(from.x-before.x,from.y-before.y));
+  const b=Math.sqrt(Math.hypot(to.x-from.x,to.y-from.y));
+  const c=Math.sqrt(Math.hypot(after.x-to.x,after.y-to.y));
+  const control=(axis:'x'|'y')=>{
+   const delta=to[axis]-from[axis];
+   const m1=delta+b*((from[axis]-before[axis])/a-(to[axis]-before[axis])/(a+b));
+   const m2=delta+b*((after[axis]-to[axis])/c-(after[axis]-from[axis])/(b+c));
+   return [from[axis]+m1/3,to[axis]-m2/3];
+  };
+  const x=control('x'),y=control('y');
+  return {from,to,c1:{x:x[0],y:y[0]},c2:{x:x[1],y:y[1]}};
+ });
 }
 
 // Keep one set of Bézier controls for visible strokes, shading boundaries,
@@ -120,6 +182,14 @@ export function smoothConnectionIssue(points:Graph['curves'][number]['points']):
 function curveSegments(curve:Curve):Segment[]{
  const points=curve.points,smooth=curve.smooth&&!smoothConnectionIssue(points);
  if(curve.distribution)return points.slice(1).map((to,i)=>({from:points[i],to,...distributionControls(curve.distribution!,points[i],to)}));
+ if(curve.conic){
+  const model=curve.conic,k=4/3*Math.tan(Math.PI/32);
+  return points.slice(1).map((to,i)=>{
+   const from=points[i],a=i*Math.PI/8,b=(i+1)*Math.PI/8;
+   return {from,to,c1:{x:from.x-k*model.rx*Math.sin(a),y:from.y+k*model.ry*Math.cos(a)},c2:{x:to.x+k*model.rx*Math.sin(b),y:to.y-k*model.ry*Math.cos(b)}};
+  });
+ }
+ if(smooth&&!points.every((p,i)=>!i||p.x>points[i-1].x))return parametricSegments(points);
  const tangentOffset=(i:number,h:number)=>{
   if(i===0)return points[1].y-points[0].y;
   if(i===points.length-1)return points[i].y-points[i-1].y;
@@ -255,7 +325,20 @@ export const presets:{id:string;subject:string;name:string;description:string;gr
 const esc=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]!));
 function rich(s:string){return s.split(/(_\{[^}]+\}|\^\{[^}]+\}|_[A-Za-z0-9]+|\^[A-Za-z0-9]+)/).map(t=>/^[_^]/.test(t)?`<tspan baseline-shift="${t[0]==='_'?'sub':'super'}" font-size="70%">${esc(t.slice(1).replace(/[{}]/g,''))}</tspan>`:esc(t).replace(/([A-Za-z]+)/g,word=>/^(m|s|kg|mol|mL|Pa|Hz|cm|HCl|NaOH)$/.test(word)?word:word.replace(/[A-Za-z]/g,'<tspan font-style="italic">$&</tspan>'))).join('');}
 export function graphLayout(g:Graph,s:Style=defaultStyle){
- const w=s.width,h=s.height,L=Math.min(w*.34,Math.max(Math.min(112,w*.2),Math.max(...g.yLabel.split('\n').map(t=>t.replace(/\\[a-zA-Z]+/g,'').replace(/[_^{}]/g,'').length))*s.fontSize*.8+22)),R=w-Math.min(95,w*.14),T=Math.min(66,h*.14),B=h-Math.min(95,h*.2),dx=(R-L)/(g.xMax-g.xMin),dy=(B-T)/(g.yMax-g.yMin);
+ const w=s.width,h=s.height;
+ let L=Math.min(w*.34,Math.max(Math.min(112,w*.2),Math.max(...g.yLabel.split('\n').map(t=>t.replace(/\\[a-zA-Z]+/g,'').replace(/[_^{}]/g,'').length))*s.fontSize*.8+22)),R=w-Math.min(95,w*.14),T=Math.min(66,h*.14),B=h-Math.min(95,h*.2);
+ let equalScale:number|undefined;
+ if(g.equalAxes??g.curves.some(curve=>!!curve.conic)){
+  // Fit the declared domain into the available rectangle at one shared unit
+  // scale. Updating the bounds also keeps clipping, axes and inverse dragging
+  // aligned with the centered plot, without modifying the saved axis limits.
+  const scale=Math.min((R-L)/(g.xMax-g.xMin),(B-T)/(g.yMax-g.yMin));
+  equalScale=scale;
+  const width=(g.xMax-g.xMin)*scale,height=(g.yMax-g.yMin)*scale;
+  const centerX=(L+R)/2,centerY=(T+B)/2;
+  L=centerX-width/2;R=centerX+width/2;T=centerY-height/2;B=centerY+height/2;
+ }
+ const dx=equalScale??(R-L)/(g.xMax-g.xMin),dy=equalScale??(B-T)/(g.yMax-g.yMin);
  const X=(x:number)=>L+(x-g.xMin)*dx,Y=(y:number)=>B-(y-g.yMin)*dy;
  const zx=Math.max(g.xMin,Math.min(0,g.xMax)),zy=Math.max(g.yMin,Math.min(0,g.yMax)),ox=X(zx),oy=Y(zy);
  return {w,h,L,R,T,B,dx,dy,X,Y,zx,zy,ox,oy,world:(x:number,y:number)=>({x:g.xMin+(x-L)/dx,y:g.yMin+(B-y)/dy})};
@@ -303,9 +386,9 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||t.value===zx)return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
  g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||t.value===zy)return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
  for(const [ci,c] of g.curves.entries()){
-  const visiblePoints=c.distribution?[c.points[distributionPeakIndex(c)]]:c.points;
+  const visiblePoints=c.distribution?[c.points[distributionPeakIndex(c)]]:c.conic?conicHandleIndices(c).map(i=>c.points[i]):c.points;
   const pts=visiblePoints.filter(Boolean).map(p=>[X(p.x),Y(p.y)]),d=pathData(ci),dashArray=lineDashArray(curveLineStyle(c),s.lineWidth);
-  const arrowGeometry=c.distribution?[geometries[ci][Math.min(geometries[ci].length-1,distributionPeakIndex(c)+Math.floor((c.points.length-distributionPeakIndex(c))/4))]].filter(Boolean):geometries[ci];
+  const arrowGeometry=c.distribution?[geometries[ci][Math.min(geometries[ci].length-1,distributionPeakIndex(c)+Math.floor((c.points.length-distributionPeakIndex(c))/4))]].filter(Boolean):c.conic?[0,4,8,12].map(i=>geometries[ci][i]):geometries[ci];
   const arrowSegments=c.arrows?arrowGeometry.map(segment=>{
    const p=segmentPoint(segment,.48),q=segmentPoint(segment,.56);
    return [X(p.x),Y(p.y),X(q.x),Y(q.y)];
