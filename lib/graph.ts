@@ -2,9 +2,13 @@ import { z } from 'zod';
 const num = z.number().finite().min(-1000000).max(1000000);
 const point = z.object({x:num,y:num});
 const tick = z.object({value:num,label:z.string().max(80)});
-const distributionSchema=z.object({kind:z.literal('gamma'),origin:num,peak:num,height:num.positive(),power:z.number().finite().min(2).max(80),baseline:num,end:num}).superRefine((model,ctx)=>{
+const distributionSchema=z.discriminatedUnion('kind',[
+ z.object({kind:z.literal('gamma'),origin:num,peak:num,height:num.positive(),power:z.number().finite().min(2).max(80),baseline:num,end:num}),
+ z.object({kind:z.literal('normal'),origin:num,peak:num,sigma:num.positive(),height:num.positive(),baseline:num,end:num})
+]).superRefine((model,ctx)=>{
  if(!(model.origin<model.peak&&model.peak<model.end))ctx.addIssue({code:z.ZodIssueCode.custom,path:['peak'],message:'분포의 시작 < 꼭짓점 < 끝 순서로 입력해 주세요.'});
  if(model.baseline+model.height>1000000)ctx.addIssue({code:z.ZodIssueCode.custom,path:['height'],message:'기준 높이와 분포 높이의 합은 1,000,000 이하여야 합니다.'});
+ if(model.kind==='normal'&&(model.peak-model.sigma===model.peak||model.peak+model.sigma===model.peak))ctx.addIssue({code:z.ZodIssueCode.custom,path:['sigma'],message:'평균 좌표에서 구분할 수 있는 크기의 표준편차를 입력해 주세요.'});
 });
 export type Distribution=z.infer<typeof distributionSchema>;
 const conicSchema=z.object({kind:z.enum(['circle','ellipse']),cx:num,cy:num,rx:num.positive(),ry:num.positive()}).superRefine((model,ctx)=>{
@@ -30,6 +34,10 @@ function sampleConic(model:Conic):DistributionPoint[]{
  return [...points,{...points[0]}];
 }
 export function distributionValue(model:Distribution,x:number):number{
+ if(model.kind==='normal'){
+  const z=(x-model.peak)/model.sigma;
+  return model.baseline+model.height*Math.exp(-.5*z*z);
+ }
  if(x<=model.origin)return model.baseline;
  if(x===model.peak)return model.baseline+model.height;
  const z=(x-model.origin)/(model.peak-model.origin);
@@ -38,6 +46,12 @@ export function distributionValue(model:Distribution,x:number):number{
  return model.baseline+model.height*Math.exp(Math.min(0,exponent));
 }
 function distributionTangentOffset(model:Distribution,x:number,h:number):number{
+ if(model.kind==='normal'){
+  const z=(x-model.peak)/model.sigma;
+  if(z===0||!Number.isFinite(z)||distributionValue(model,x)===model.baseline)return 0;
+  const logMagnitude=Math.log(model.height)-.5*z*z+Math.log(Math.abs(z))+Math.log(h)-Math.log(model.sigma);
+  return -Math.sign(z)*Math.exp(logMagnitude);
+ }
  const z=(x-model.origin)/(model.peak-model.origin);
  if(z<=0||z===1||!Number.isFinite(z)||distributionValue(model,x)===model.baseline)return 0;
  // Logarithms avoid overflowing the world-space derivative for narrow curves.
@@ -51,15 +65,24 @@ function distributionControls(model:Distribution,from:DistributionPoint,to:Distr
 function sampleDistribution(model:Distribution):DistributionPoint[]{
  // Seed around the mode in dimensionless coordinates. Uniform sampling across
  // a very long domain could miss a narrow peak altogether.
- const xs=[model.origin,model.peak],width=model.peak-model.origin;
- for(let z=2;z<2048;z*=2){
-  const x=model.origin+width*z;
-  if(x>=model.end)break;
-  if(x>xs.at(-1)!)xs.push(x);
-  if(distributionValue(model,x)===model.baseline)break;
+ const xs=[model.origin,model.peak,model.end];
+ if(model.kind==='normal'){
+  // Both tails need seeds measured in σ, independently of the display range.
+  // In particular, a tiny σ in a wide domain must retain its central bell.
+  for(let z=1;z<=64;z*=2)for(const direction of [-1,1]){
+   const x=model.peak+direction*model.sigma*z;
+   if(x>model.origin&&x<model.end)xs.push(x);
+  }
+ }else{
+  const width=model.peak-model.origin;
+  for(let z=2;z<2048;z*=2){
+   const x=model.origin+width*z;
+   if(x>=model.end)break;
+   xs.push(x);
+   if(distributionValue(model,x)===model.baseline)break;
+  }
  }
- xs.push(model.end);
- const samples=xs.map(x=>({x,y:distributionValue(model,x)}));
+ const samples=[...new Set(xs)].sort((a,b)=>a-b).map(x=>({x,y:distributionValue(model,x)}));
  const error=(from:DistributionPoint,to:DistributionPoint)=>{
   if((from.x+to.x)/2===from.x||(from.x+to.x)/2===to.x)return 0;
   const {c1,c2}=distributionControls(model,from,to);
@@ -319,6 +342,7 @@ export const presets:{id:string;subject:string;name:string;description:string;gr
  {id:'distance',subject:'물리학',name:'거리 · 시간',description:'두 물체 사이의 거리 변화',graph:{...base,title:'B와 C 사이의 거리',xLabel:'t (초)',yLabel:'거리\n(m)',xMax:8.5,yMax:17,xTicks:ticks([1,2,3,4,5,6,7]),yTicks:ticks([8,12,14]),curves:[curve('거리',[[0,12],[2,0],[4,8],[7.5,15]])],guides:[guide(0,8,4,8),guide(4,0,4,8),guide(0,14,7,14),guide(7,0,7,14)],labels:[]}},
  {id:'magnetic',subject:'물리학',name:'자기장 · 전류',description:'전류가 증가할수록 감소하는 자기장',graph:{...base,title:'자기장과 전류의 관계',xLabel:'I_P',yLabel:'B',xMax:2.1,yMax:3.7,xTicks:ticks([1,1.5],['I_0','1.5I_0']),yTicks:ticks([1],['B_1']),curves:[curve('자기장',[[0,3],[1.5,0]])],guides:[guide(0,1,1,1),guide(1,0,1,1)],labels:[]}},
  {id:'distribution',subject:'생명과학',name:'형질의 분포',description:'부리 크기에 따른 두 개체군의 분포',graph:{...base,title:'개체군의 형질 분포',xLabel:'부리 크기',yLabel:'개체 수',xMax:11,yMax:1.3,xTicks:[],yTicks:[],curves:[distributionCurve("P′",2,3),distributionCurve('P',4.5,5,.6,true)],guides:[],labels:[label(2.5,1,'P′',20,-5),label(6.3,.43,'P',12,-12)],note:'⚠ 개체 수준에서 그래프 변형은 실제 자연, 과학적 사실과 일치하지 않을 수 있으니 출제 시 유의하세요.'}},
+ {id:'normal',subject:'공통',name:'정규분포',description:'평균 μ와 표준편차 σ로 조절하는 대칭 분포',graph:{...base,title:'정규분포',xLabel:'x',yLabel:'상대 도수',xMax:8.5,yMax:1.3,xTicks:ticks([3,4,5],['\\mu-\\sigma','\\mu','\\mu+\\sigma']),yTicks:[],curves:[withDistribution(curve('정규분포',[[0,0]]),{kind:'normal',origin:0,peak:4,sigma:1,height:1,baseline:0,end:8})],guides:[guide(0,1,4,1),guide(4,0,4,1)],labels:[],note:'평균 μ, 표준편차 σ와 봉우리 높이를 조절하는 정규분포 모양의 예시입니다.'}},
  {id:'chemistry',subject:'화학',name:'중화 반응의 온도',description:'혼합 용액의 최고 온도 비교',graph:{...base,title:'혼합 용액의 최고 온도',xLabel:'부피 (mL)',yLabel:'최고 온도\n(°C)',xMax:50,yMax:3.2,xTicks:ticks([20,30,40],['20\n40','30\n30','40\n20']),yTicks:ticks([1],['t_1']),curves:[curve('측정값',[[20,1]],{dots:true}),curve('측정값',[[30,2.7]],{dots:true}),curve('측정값',[[40,1]],{dots:true})],guides:[guide(0,1,45,1),...([20,30,40].map(x=>guide(x,0,x,3)))],labels:[label(7,0,'HCl\nNaOH',0,31),label(20,1,'(가)',24,-12),label(30,2.7,'(나)',24,-12),label(40,1,'(다)',24,-12)],note:'NaOH 부피는 HCl 부피와 합이 60 mL가 되도록 설정한 예시입니다.'}},
  {id:'spectrum',subject:'지구과학',name:'복사 에너지 분포',description:'연속 곡선과 흡수선이 있는 스펙트럼',graph:{...base,title:'파장에 따른 복사 에너지',xLabel:'파장',yLabel:'에너지의\n상대 세기',xMax:10.5,yMax:1.3,xTicks:[],yTicks:[],curves:[curve('ㄱ',samples(x=>Math.pow(x/1.5,2)*Math.exp(2-2*x/1.5),0,10,200)),curve('ㄴ',samples(x=>{const b=.65*Math.pow(x/1.6,2)*Math.exp(2-2*x/1.6);return b*(1-.65*Math.pow(Math.sin(x*9),18));},0,10,400))],guides:[],labels:[label(2.3,.85,'ㄱ',18,-15),label(2.4,.5,'ㄴ',18,-10)],note:'형태를 재현한 예시이며 실제 측정 스펙트럼은 아닙니다.'}}
 ];

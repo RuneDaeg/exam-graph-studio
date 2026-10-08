@@ -38,12 +38,19 @@ try{
   assert.ok(curve.required.includes('lineStyle'));
   assert.deepEqual(curve.properties.lineStyle,{type:'string',enum:lineStyles});
   assert.ok(curve.required.includes('distribution'));
-  const [gamma,ordinary]=curve.properties.distribution.anyOf;
+  const [gamma,normal,ordinary]=curve.properties.distribution.anyOf;
   assert.deepEqual(ordinary,{type:'null'});
   assert.equal(gamma.additionalProperties,false);
   assert.deepEqual(gamma.required,['kind','origin','peak','height','power','baseline','end']);
   assert.deepEqual(gamma.properties.kind,{type:'string',enum:['gamma']});
   assert.deepEqual(gamma.properties.power,{type:'number',minimum:2,maximum:80});
+  assert.equal(normal.additionalProperties,false);
+  assert.deepEqual(normal.required,['kind','origin','peak','sigma','height','baseline','end']);
+  assert.deepEqual(normal.properties.kind,{type:'string',enum:['normal']});
+  assert.deepEqual(normal.properties.sigma,{type:'number'});
+  assert.ok(body.instructions.includes('For a normal distribution (정규분포, Gaussian)'));
+  assert.ok(body.instructions.includes('height=0.3989422804014327'));
+  assert.ok(body.instructions.includes('exact peak (peak,baseline+height)'));
   assert.ok(curve.required.includes('conic'));
   const [conic,noConic]=curve.properties.conic.anyOf;
   assert.deepEqual(noConic,{type:'null'});
@@ -119,6 +126,51 @@ try{
   globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(value)}]}]});
   await assert.rejects(()=>generateOpenAIGraph({prompt:'감마 모양 분포'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  }
+ // AI metadata, rather than its sparse points, defines an exact symmetric
+ // Gaussian. Peak-aligned guides and labels survive normalization/refinement.
+ const normal={kind:'normal',origin:-4,peak:0,sigma:1,height:1/Math.sqrt(2*Math.PI),baseline:0,end:4};
+ const normalCurve={...fixture.curves[0],distribution:normal,smooth:false,dots:false,arrows:false,points:[{x:-4,y:0},{x:0,y:.4},{x:4,y:0}]};
+ const normalShade={curve:0,mode:'baseline',otherCurve:0,baseline:0,xStart:-1,xEnd:1,pattern:'solid',opacity:.15};
+ const normalFixture={...legacyFixture,equalAxes:false,xMin:-5,xMax:5,yMin:0,yMax:.5,curves:[normalCurve],guides:[{x1:-1,y1:0,x2:-1,y2:normal.height*Math.exp(-.5)},{x1:1,y1:0,x2:1,y2:normal.height*Math.exp(-.5)}],labels:[],shadings:[normalShade]};
+ globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(normalFixture)}]}]});
+ const normalResult=await generateOpenAIGraph({prompt:'표준정규분포를 그리고 -1부터 1까지 음영을 넣어 줘'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.deepEqual(normalResult.curves[0].distribution,normal);
+ assert.equal(normalResult.curves[0].smooth,true);
+ assert.deepEqual(normalResult.shadings,[normalShade]);
+ assert.deepEqual(normalResult.guides,normalFixture.guides);
+ const normalSamples=normalResult.curves[0].points;
+ assert.ok(normalSamples.length>3&&normalSamples.length<=500);
+ assert.notDeepEqual(normalSamples,normalCurve.points);
+ assert.equal(normalSamples[0].x,normal.origin);
+ assert.equal(normalSamples.at(-1).x,normal.end);
+ assert.ok(normalSamples[0].y>0); // Gaussian tails must not be forced to zero.
+ assert.ok(normalSamples.some(point=>point.x===normal.peak&&point.y===normal.height));
+ for(const [index,point] of normalSamples.entries()){
+  assert.ok(Math.abs(point.y-normal.height*Math.exp(-.5*((point.x-normal.peak)/normal.sigma)**2))<1e-10);
+  if(index)assert.ok(point.x>normalSamples[index-1].x);
+ }
+ const shiftedNormal={kind:'normal',origin:-3,peak:2,sigma:1.25,height:8,baseline:1,end:7};
+ const shiftedGuides=[{x1:2,y1:0,x2:2,y2:9},{x1:0,y1:9,x2:2,y2:9}];
+ const shiftedLabels=[{x:2,y:9,text:'F_{\\max}',dx:0,dy:-20}];
+ const shiftedFixture={...normalFixture,xMin:-4,xMax:8,yMax:11,curves:[{...normalCurve,distribution:shiftedNormal}],guides:shiftedGuides,labels:shiftedLabels,shadings:[]};
+ globalThis.fetch=async(_url,options)=>{
+  const body=JSON.parse(options.body);
+  const current=JSON.parse(body.input[0].content[1].text.replace(/^Current graph data: /,''));
+  assert.deepEqual(current.curves[0].distribution,shiftedNormal);
+  assert.deepEqual(current.guides,shiftedGuides);
+  assert.deepEqual(current.labels,shiftedLabels);
+  assert.ok(current.curves[0].points.length>3);
+  return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(current)}]}]});
+ };
+ const shiftedResult=await generateOpenAIGraph({prompt:'정규분포와 봉우리 보조선을 유지해 줘',current:shiftedFixture},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.deepEqual(shiftedResult.curves[0].distribution,shiftedNormal);
+ assert.deepEqual(shiftedResult.guides,shiftedGuides);
+ assert.deepEqual(shiftedResult.labels,shiftedLabels);
+ for(const invalid of [{kind:'lognormal'},{sigma:0},{sigma:-1},{sigma:1000001},{sigma:undefined},{origin:0},{end:0},{height:0},{baseline:999999,height:2}]){
+  const value={...normalFixture,curves:[{...normalCurve,distribution:{...normal,...invalid}}]};
+  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(value)}]}]});
+  await assert.rejects(()=>generateOpenAIGraph({prompt:'정규분포'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
+ }
  // Formula metadata from an AI response must generate a true closed circle;
  // retaining a few inaccurate AI-supplied points would reproduce the original bug.
  const circle={kind:'circle',cx:0,cy:0,rx:2,ry:2};
@@ -182,5 +234,5 @@ try{
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({...fixture,curves:[{...fixture.curves[0],lineStyle:'unsupported'}]})}]}]});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
- console.log('PASS: BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, circle/ellipse metadata and canonical closed samples, equal-axis refinement, conic bounds and family exclusion, gamma metadata and canonical samples, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
+ console.log('PASS: BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, circle/ellipse metadata and canonical closed samples, equal-axis refinement, conic bounds and family exclusion, gamma/normal metadata and canonical samples, Gaussian shading and peak-guide refinement, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
 }finally{globalThis.fetch=originalFetch;await rm(temp,{recursive:true,force:true});}

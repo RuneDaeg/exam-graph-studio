@@ -13,7 +13,7 @@ try{
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
  const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray,distributionValue,withDistribution,freeDistribution,distributionPeakIndex,withConic,freeConic,conicHandleIndices}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
- const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading,updateDistribution,updateConic}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
+ const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading,updateDistribution,updateConic,replaceCurve}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  assert.deepEqual(parseCoordinates('(1e-7, -2.5E+2), (+.5, 3.)',true),[{x:1e-7,y:-250},{x:.5,y:3}]);
  assert.deepEqual(parseCoordinates('x축 시간, (0,0), (2,3), 부드러운 곡선'),[{x:0,y:0},{x:2,y:3}],'natural coordinate prompts remain permissive by default');
  assert.throws(()=>parseCoordinates('(0,0), (2,3), (4,',true),/좌표 형식/);
@@ -603,6 +603,38 @@ try{
  assert.deepEqual(fixture,fixtureOriginal,'follow must not mutate labels or guides');
  assert.deepEqual(moveCurve(fixture,0,1,2).labels,fixture.labels);
 
+
+ // Formula input controls follow semantic peaks even when adaptive sampling
+ // changes point indices. Fixed numerical ticks and unrelated lines stay put.
+ const gaussian=graphSchema.parse(presets.find(p=>p.id==='normal').graph);
+ gaussian.labels=[{x:4,y:1,text:'최대',dx:0,dy:-18}];
+ const gaussianOriginal=structuredClone(gaussian);
+ const normalMoved=movePoint(gaussian,0,distributionPeakIndex(gaussian.curves[0]),5,.8,true);
+ assert.deepEqual(normalMoved.guides,[{x1:0,y1:.8,x2:5,y2:.8},{x1:5,y1:0,x2:5,y2:.8}]);
+ assert.deepEqual(normalMoved.labels,[{x:5,y:.8,text:'최대',dx:0,dy:-18}]);
+ assert.deepEqual(normalMoved.xTicks.map(t=>t.value),[4,5,6]);
+ assert.equal(normalMoved.curves[0].distribution.sigma,1);
+ const normalTyped=updateDistribution(gaussian,0,{peak:5,sigma:.5,height:.75},true);
+ assert.deepEqual(normalTyped.guides,[{x1:0,y1:.75,x2:5,y2:.75},{x1:5,y1:0,x2:5,y2:.75}]);
+ assert.deepEqual(normalTyped.xTicks.map(t=>t.value),[4.5,5,5.5]);
+ const followDisabled=updateDistribution(gaussian,0,{peak:5,sigma:.5,height:.75},false);
+ assert.deepEqual(followDisabled.guides,gaussian.guides);
+ assert.deepEqual(followDisabled.labels,gaussian.labels);
+ assert.deepEqual(followDisabled.xTicks,gaussian.xTicks);
+ const normalTranslated=moveCurve(gaussian,0,.25,.1,true);
+ assert.deepEqual(normalTranslated.guides,[{x1:0,y1:1.1,x2:4.25,y2:1.1},{x1:4.25,y1:0,x2:4.25,y2:1.1}]);
+ assert.deepEqual(normalTranslated.xTicks.map(t=>t.value),[3.25,4.25,5.25]);
+ const newGamma=withDistribution(followModel.curves[0],{...followModel.curves[0].distribution,peak:3,height:.9,power:12});
+ const typedGamma=replaceCurve(followModel,0,newGamma,true);
+ assert.deepEqual(typedGamma.guides,[{x1:3,y1:0,x2:3,y2:.9}]);
+ assert.equal(typedGamma.labels[0].x,3);
+ const roundedGuides={...fixture,guides:[{x1:2,y1:0,x2:2+1e-12,y2:3-1e-12}]};
+ assert.deepEqual(movePoint(roundedGuides,0,0,3,5,true).guides,[{x1:3,y1:0,x2:3,y2:5}]);
+ const minimum={...fixture,curves:[{...fixture.curves[0],points:[{x:0,y:4},{x:2,y:3},{x:4,y:5}]}]};
+ const adjustedMinimum=replaceCurve(minimum,0,{...minimum.curves[0],points:[{x:0,y:4},{x:3,y:2},{x:4,y:5}]},true);
+ assert.deepEqual(adjustedMinimum.guides[0],{x1:3,y1:0,x2:3,y2:2});
+ assert.deepEqual(adjustedMinimum.guides[3],minimum.guides[3]);
+ assert.deepEqual(gaussian,gaussianOriginal,'linked normal edits must be immutable');
  const labelMove=moveLabel(fixture,0,5,-7);
  assert.deepEqual(labelMove.labels[0],{x:2,y:3,text:'A',dx:14,dy:-19});
  assert.equal(moveLabel(fixture,0,2e6,-2e6).labels[0].dx,1e6);

@@ -10,7 +10,7 @@ import {CurvePointInsert} from '@/components/curve-point-insert';
 import {GraphShading} from '@/components/graph-shading';
 import {RectangleShadeDraw} from '@/components/rectangle-shade-draw';
 import {typesetSvg,typesetSvgCached} from '@/lib/math-svg';
-import {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,type EditTarget} from '@/lib/graph-edit';
+import {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,replaceCurve,type EditTarget} from '@/lib/graph-edit';
 
 type Box={id:string;x:number;y:number;width:number;height:number};
 type Path={index:number;d:string};
@@ -21,11 +21,11 @@ const rounded=(v:number)=>Number(v.toPrecision(12));
 const equalPoint=(a:{x:number;y:number},b:{x:number;y:number})=>a.x===b.x&&a.y===b.y;
 const hasTarget=(g:Graph,t:EditTarget)=>t.kind==='point'?Boolean(g.curves[t.curve]?.points[t.index]):t.kind==='curve'?Boolean(g.curves[t.curve]):t.kind==='label'?Boolean(g.labels[t.index]):t.kind==='tick'?Boolean(g[t.axis==='x'?'xTicks':'yTicks'][t.index]):true;
 
-export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:Graph;style:Style;disabled:boolean;onCommit:(graph:Graph)=>void;onDropImage:(file:File)=>void}){
+export function GraphPreview({graph,style,disabled,follow,onFollowChange,onCommit,onDropImage}:{graph:Graph;style:Style;disabled:boolean;follow:boolean;onFollowChange:(value:boolean)=>void;onCommit:(graph:Graph)=>void;onDropImage:(file:File)=>void}){
  const [enabled,setEnabled]=useState(true),[selected,setSelected]=useState<EditTarget|null>(null),[draft,setDraft]=useState<Graph|null>(null);
  const [addingPoint,setAddingPoint]=useState(false),[shadingOpen,setShadingOpen]=useState(false);
  const [drawingRectangle,setDrawingRectangle]=useState(false),[initialShadingIndex,setInitialShadingIndex]=useState<number|undefined>();
- const [follow,setFollow]=useState(false),[snap,setSnap]=useState(false),[step,setStep]=useState('0.1'),[error,setError]=useState('');
+ const [snap,setSnap]=useState(false),[step,setStep]=useState('0.1'),[error,setError]=useState('');
  const [typed,setTyped]=useState<{source:string;svg:string;errors:string[]}>({source:'',svg:'',errors:[]});
  const [boxes,setBoxes]=useState<Box[]>([]),[paths,setPaths]=useState<Path[]>([]),[scale,setScale]=useState(1);
  const content=useRef<HTMLDivElement>(null),overlay=useRef<SVGSVGElement>(null),drag=useRef<Drag|null>(null);
@@ -102,9 +102,9 @@ export function GraphPreview({graph,style,disabled,onCommit,onDropImage}:{graph:
    <button className={'button '+(drawingRectangle?'edit-active':'')} aria-pressed={drawingRectangle} disabled={disabled||(graph.shadings?.length??0)>=20} onClick={()=>{cancel();setDrawingRectangle(!drawingRectangle);setEnabled(true);setAddingPoint(false);setShadingOpen(false);setSelected(null);setError('');}}><SquareDashed size={15}/>{drawingRectangle?'사각형 취소':'사각형 음영'}</button>
    <button className="button" disabled={disabled||graph.labels.length>=40} onClick={()=>{cancel();const index=graph.labels.length;onCommit({...graph,labels:[...graph.labels,{text:'A',x:(graph.xMin+graph.xMax)/2,y:(graph.yMin+graph.yMax)/2,dx:0,dy:0}]});setEnabled(true);setSelected({kind:'label',index});}}><Plus size={15}/>문자 추가</button>
    <label><input type="checkbox" checked={snap} onChange={e=>setSnap(e.target.checked)}/>좌표 맞춤</label><input className="snap-step" type="number" min="0" step="any" value={step} disabled={!snap} aria-label="좌표 맞춤 간격" onChange={e=>setStep(e.target.value)}/>
-   <label title="이동 전 좌표가 같은 문자와 점선 끝점만 함께 이동합니다."><input type="checkbox" checked={follow} onChange={e=>setFollow(e.target.checked)}/>연결된 문자·점선</label>
+   <label title="점이나 봉우리에 연결된 보조선과 문자가 함께 이동합니다."><input type="checkbox" checked={follow} onChange={e=>onFollowChange(e.target.checked)}/>보조선·문자 함께 이동</label>
   </div>
-  <p className="preview-help" role={addingPoint||drawingRectangle?'status':undefined}>{drawingRectangle?'축 안에서 대각선으로 드래그해 사각형 영역을 그리세요. Esc로 취소 · 좌표 입력은 음영 편집의 사각형 영역을 사용하세요.':addingPoint?'점을 추가할 선 위를 클릭하세요. 기존 점 사이에 삽입됩니다. Esc로 취소 · 키보드는 선 선택 후 아래의 중간 점 추가를 사용하세요.':active?(conicControls?'원·타원은 네 방향 손잡이로 크기를, 선을 드래그해 중심을 바꿉니다. 선을 선택하면 중심과 반지름을 정확히 입력할 수 있습니다.':formulaControls?'분포의 봉우리를 드래그해 위치·높이를 조절하세요. 선을 선택하면 폭·비대칭을 조절하거나 자유 곡선으로 전환할 수 있습니다.':smoothControls?'점·선을 클릭하면 연결 방식을 바꿀 수 있습니다. 곡선의 조절점은 주변 구간도 매끄럽게 바꿉니다.':'점·선을 클릭해 직선 / 곡선을 선택하세요. 드래그로 이동 · 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
+  <p className="preview-help" role={addingPoint||drawingRectangle?'status':undefined}>{drawingRectangle?'축 안에서 대각선으로 드래그해 사각형 영역을 그리세요. Esc로 취소 · 좌표 입력은 음영 편집의 사각형 영역을 사용하세요.':addingPoint?'점을 추가할 선 위를 클릭하세요. 기존 점 사이에 삽입됩니다. Esc로 취소 · 키보드는 선 선택 후 아래의 중간 점 추가를 사용하세요.':active?(conicControls?'원·타원은 네 방향 손잡이로 크기를, 선을 드래그해 중심을 바꿉니다. 선을 선택하면 중심과 반지름을 정확히 입력할 수 있습니다.':formulaControls?'봉우리를 드래그해 위치·높이를 바꾸세요. 선을 선택하면 분포 종류와 폭을 조절할 수 있습니다.':smoothControls?'점·선을 클릭하면 연결 방식을 바꿀 수 있습니다. 곡선의 조절점은 주변 구간도 매끄럽게 바꿉니다.':'점·선을 클릭해 직선 / 곡선을 선택하세요. 드래그로 이동 · 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
   {shadingOpen&&!disabled&&<GraphShading graph={graph} onChange={onCommit} initialCurve={selectedCurve??undefined} initialShadingIndex={initialShadingIndex} onClose={()=>setShadingOpen(false)}/>}
   <div className={'paper '+(style.transparent?'transparent-paper':'')} onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{e.preventDefault();if(!disabled&&e.dataTransfer.files[0])onDropImage(e.dataTransfer.files[0]);}}>
    <div className="graph-preview"><div ref={content} className="graph-art" dangerouslySetInnerHTML={{__html:display}}/>
@@ -162,8 +162,8 @@ function SelectionEditor({graph,target,follow,onCommit,onInsert,onClose}:{graph:
   {(t.kind==='point'||t.kind==='label')&&<label>{t.kind==='label'?'세로 이동(px)':'y 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 y 좌표':'문자 세로 이동'} value={y} onChange={e=>setY(e.target.value)}/></label>}
   <button className="button primary" type="submit">적용</button>
  </div>}{connection&&!connection.distribution&&!connection.conic&&<CurveConnection points={connection.points} smooth={connection.smooth} onChange={smooth=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?{...c,smooth}:c)})}/>}
- {connection&&!connection.conic&&curveIndex!==null&&<DistributionControls key={`distribution-${curveIndex}`} curve={connection} onChange={curve=>onCommit(graphSchema.parse({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?curve:c)}))}/>}
- {connection&&!connection.distribution&&curveIndex!==null&&<ConicControls key={`conic-${curveIndex}`} curve={connection} onChange={curve=>onCommit(graphSchema.parse({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?curve:c),...((curve.conic&&!connection.conic||connection.conic&&graph.equalAxes===undefined)?{equalAxes:true}:{})}))}/> }
+ {connection&&!connection.conic&&curveIndex!==null&&<DistributionControls key={`distribution-${curveIndex}`} curve={connection} onChange={curve=>onCommit(replaceCurve(graph,curveIndex,curve,follow))}/>}
+ {connection&&!connection.distribution&&curveIndex!==null&&<ConicControls key={`conic-${curveIndex}`} curve={connection} onChange={curve=>onCommit(replaceCurve({...graph,...((curve.conic&&!connection.conic||connection.conic&&graph.equalAxes===undefined)?{equalAxes:true}:{})},curveIndex,curve,follow))}/> }
  {connection&&<CurveLineStyle value={curveLineStyle(connection)} onChange={lineStyle=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?{...c,lineStyle,dashed:lineStyle!=='solid'}:c)})}/>}
  {connection&&!connection.distribution&&!connection.conic&&curveIndex!==null&&<CurvePointInsert key={curveIndex} points={connection.points} initialSegment={t.kind==='point'?t.index:0} onInsert={segment=>onInsert(curveIndex,segment)}/>}
  {t.kind==='curve'&&!connection?.distribution&&!connection?.conic&&<div className="curve-options">{(['dots','arrows'] as const).map(k=><label key={k}><input type="checkbox" checked={graph.curves[t.curve]?.[k]||false} onChange={e=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===t.curve?{...c,[k]:e.target.checked}:c)})}/>{({dots:'점 표시',arrows:'진행 방향'})[k]}</label>)}</div>}{t.kind==='label'&&<button type="button" className="text-button remove-label" onClick={()=>{onCommit({...graph,labels:graph.labels.filter((_,i)=>i!==t.index)});onClose();}}>문자 삭제</button>}{error&&<p className="error" role="alert">{error}</p>}</form>;

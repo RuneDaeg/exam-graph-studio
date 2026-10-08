@@ -57,7 +57,11 @@ export function createRectangleShading(graph:Graph,a:Point,b:Point):Shading{
 }
 
 function followAnchors(graph:Graph,movements:Movement[]):Graph{
- const moved=(point:Point)=>movements.find(m=>same(m.from,point))?.to;
+ // Ignore round-off in API coordinates and repeated pointer edits, while
+ // keeping nearby but independently positioned annotations separate.
+ const close=(a:number,b:number,span:number)=>Math.abs(a-b)<=Math.max(Math.abs(span)*1e-9,Number.EPSILON*Math.max(Math.abs(a),Math.abs(b))*8);
+ const matches=(a:Point,b:Point)=>close(a.x,b.x,graph.xMax-graph.xMin)&&close(a.y,b.y,graph.yMax-graph.yMin);
+ const moved=(point:Point)=>movements.find(m=>matches(m.from,point))?.to;
  const labels=graph.labels.map(label=>{
   const next=moved(label);
   return next?{...label,x:next.x,y:next.y}:label;
@@ -68,19 +72,52 @@ function followAnchors(graph:Graph,movements:Movement[]):Graph{
   const next={...guide,...(a?{x1:a.x,y1:a.y}:{}),...(b?{x2:b.x,y2:b.y}:{})};
   // An unmatched endpoint is a projection; preserve the original guide direction.
   if(!!a!==!!b){
-   if(guide.x1===guide.x2){if(a)next.x2=a.x;else next.x1=b!.x;}
-   if(guide.y1===guide.y2){if(a)next.y2=a.y;else next.y1=b!.y;}
+   if(close(guide.x1,guide.x2,graph.xMax-graph.xMin)){if(a)next.x2=a.x;else next.x1=b!.x;}
+   if(close(guide.y1,guide.y2,graph.yMax-graph.yMin)){if(a)next.y2=a.y;else next.y1=b!.y;}
   }
   return next;
  });
  return {...graph,labels,guides};
 }
 
-export function updateDistribution(graph:Graph,index:number,patch:Partial<Distribution>):Graph{
+function followNormalTicks(graph:Graph,before:Distribution,after:Distribution):Graph{
+ if(before.kind!=='normal'||after.kind!=='normal')return graph;
+ // These symbols describe parameters, unlike fixed numeric axis graduations.
+ const offsets:Record<string,number>={'\\mu':0,'\\mu-\\sigma':-1,'\\mu+\\sigma':1,'μ':0,'μ−σ':-1,'μ-σ':-1,'μ+σ':1};
+ return {...graph,xTicks:graph.xTicks.map(tick=>{
+  const offset=offsets[tick.label.replace(/\s/g,'')];
+  if(offset===undefined||Math.abs(tick.value-(before.peak+offset*before.sigma))>Math.abs(graph.xMax-graph.xMin)*1e-9)return tick;
+  return {...tick,value:after.peak+offset*after.sigma};
+ })};
+}
+
+/** Replace a curve from numeric controls, retaining semantic model anchors. */
+export function replaceCurve(graph:Graph,index:number,curve:Graph['curves'][number],follow=false):Graph{
+ const source=item(graph.curves,index);
+ let result=graphSchema.parse({...graph,curves:graph.curves.map((c,i)=>i===index?curve:c)});
+ if(!follow)return result;
+ const next=result.curves[index];
+ let movements:Movement[]=[];
+ if(source.distribution&&next.distribution){
+  const a=source.distribution,b=next.distribution;
+  movements=[{from:{x:a.peak,y:a.baseline+a.height},to:{x:b.peak,y:b.baseline+b.height}}];
+  if(a.kind==='normal'&&b.kind==='normal')for(const sign of [-1,1])movements.push({from:{x:a.peak+sign*a.sigma,y:a.baseline+a.height*Math.exp(-.5)},to:{x:b.peak+sign*b.sigma,y:b.baseline+b.height*Math.exp(-.5)}});
+ }else if(next.distribution&&!source.distribution){
+  const peak=source.points.reduce((a,b)=>b.y>a.y?b:a),model=next.distribution;
+  movements=[{from:peak,to:{x:model.peak,y:model.baseline+model.height}}];
+ }else if(source.points.length===next.points.length){
+  movements=source.points.map((from,i)=>({from,to:next.points[i]}));
+ }
+ result=followAnchors(result,movements.filter(m=>!same(m.from,m.to)));
+ if(source.distribution&&next.distribution)result=followNormalTicks(result,source.distribution,next.distribution);
+ return graphSchema.parse(result);
+}
+
+export function updateDistribution(graph:Graph,index:number,patch:Partial<Distribution>,follow=false):Graph{
  const source=item(graph.curves,index);
  if(!source.distribution)throw Error('수식 분포를 먼저 선택해 주세요.');
- const next=withDistribution(source,{...source.distribution,...patch});
- return graphSchema.parse({...graph,curves:graph.curves.map((c,i)=>i===index?next:c)});
+ const next=withDistribution(source,{...source.distribution,...patch} as Distribution);
+ return replaceCurve(graph,index,next,follow);
 }
 
 export function updateConic(graph:Graph,index:number,patch:Partial<Conic>):Graph{
@@ -116,9 +153,7 @@ export function movePoint(graph:Graph,curve:number,index:number,x:number,y:numbe
   const minY=Math.max(graph.yMin,model.baseline+minimumHeight),maxY=graph.yMax;
   if(minX>maxX||minY>maxY)throw Error('분포의 꼭짓점이 축 범위 안에 오도록 축 범위를 넓혀 주세요.');
   const peak=clamp(x,minX,maxX),height=clamp(y,minY,maxY)-model.baseline;
-  let result=updateDistribution(graph,curve,{peak,height});
-  if(follow)result=followAnchors(result,[{from:point,to:{x:peak,y:model.baseline+height}}]);
-  return graphSchema.parse(result);
+  return updateDistribution(graph,curve,{peak,height},follow);
  }
  const last=source.points.length-1;
  let minX=graph.xMin,maxX=graph.xMax;
@@ -163,7 +198,10 @@ export function moveCurve(graph:Graph,curve:number,dx:number,dy:number,follow=fa
   if(minDx>maxDx||minDy>maxDy)throw Error('곡선이 축 범위보다 큽니다. 먼저 축 범위를 넓혀 주세요.');
   const shiftX=clamp(dx,minDx,maxDx),shiftY=clamp(dy,minDy,maxDy);
   let result=updateDistribution(graph,curve,{origin:model.origin+shiftX,peak:model.peak+shiftX,end:model.end+shiftX,baseline:model.baseline+shiftY});
-  if(follow)result=followAnchors(result,source.points.map(from=>({from,to:{x:from.x+shiftX,y:from.y+shiftY}})));
+  if(follow){
+   result=followAnchors(result,source.points.map(from=>({from,to:{x:from.x+shiftX,y:from.y+shiftY}})));
+   result=followNormalTicks(result,model,result.curves[curve].distribution!);
+  }
   return graphSchema.parse(result);
  }
  const xs=source.points.map(p=>p.x),ys=source.points.map(p=>p.y);
