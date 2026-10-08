@@ -18,7 +18,8 @@
     "test:graph-edit": "node scripts/test-graph-edit.mjs",
     "test:exam-library": "node scripts/test-exam-library.mjs",
     "test:normal-model": "node scripts/test-normal-model.mjs",
-    "test:dual-axis": "node scripts/test-dual-axis.mjs"
+    "test:dual-axis": "node scripts/test-dual-axis.mjs",
+    "test:graph-delete": "node scripts/test-graph-delete.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

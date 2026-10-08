@@ -4,6 +4,7 @@ export type EditTarget =
  | {kind:'point';curve:number;index:number}
  | {kind:'curve';curve:number}
  | {kind:'label';index:number}
+ | {kind:'guide';index:number}
  | {kind:'axis';axis:'x'|'y'|'right'}
  | {kind:'tick';axis:'x'|'y'|'right';index:number};
 
@@ -44,6 +45,43 @@ export function removeCurve(graph:Graph,index:number):Graph{
   ...(s.otherCurve===undefined?{}:{otherCurve:s.otherCurve===index?0:s.otherCurve>index?s.otherCurve-1:s.otherCurve}),
  }));
  return graphSchema.parse({...graph,curves:graph.curves.filter((_,i)=>i!==index),...(shadings===undefined?{}:{shadings})});
+}
+
+/** Delete the selected visual item without removing independent annotations. */
+export function deleteGraphTarget(graph:Graph,target:EditTarget):Graph{
+ if(target.kind==='curve')return removeCurve(graph,target.curve);
+ if(target.kind==='axis')return adjustText(graph,target,'');
+ if(target.kind==='label'||target.kind==='guide'){
+  const key=target.kind==='label'?'labels':'guides';
+  item<unknown>(graph[key],target.index);
+  return graphSchema.parse({...graph,[key]:graph[key].filter((_,i)=>i!==target.index)});
+ }
+ if(target.kind==='tick'){
+  if(target.axis==='right'){
+   if(!graph.rightYAxis)throw Error('오른쪽 세로축을 먼저 켜 주세요.');
+   item(graph.rightYAxis.ticks,target.index);
+   return graphSchema.parse({...graph,rightYAxis:{...graph.rightYAxis,ticks:graph.rightYAxis.ticks.filter((_,i)=>i!==target.index)}});
+  }
+  const key=target.axis==='x'?'xTicks':'yTicks';
+  item(graph[key],target.index);
+  return graphSchema.parse({...graph,[key]:graph[key].filter((_,i)=>i!==target.index)});
+ }
+ const source=item(graph.curves,target.curve);
+ item(source.points,target.index);
+ // Formula samples are derived geometry: deleting a displayed handle deletes
+ // the owning curve instead of silently regenerating the removed point.
+ if(source.distribution||source.conic)return removeCurve(graph,target.curve);
+ const last=source.points.length-1,closed=last>0&&same(source.points[0],source.points[last]);
+ const vertexIndex=closed&&target.index===last?0:target.index;
+ const vertices=(closed?source.points.slice(0,-1):source.points).filter((_,i)=>i!==vertexIndex);
+ if(!vertices.length)return removeCurve(graph,target.curve);
+ const distinct=new Set(vertices.map(p=>`${p.x},${p.y}`)).size;
+ const points=closed&&distinct>=3?[...vertices,vertices[0]]:vertices;
+ const next={...source,points,...(points.length<=2?{smooth:false}:{}),...(points.length===1?{dots:true}: {})};
+ const result={...graph,curves:graph.curves.map((curve,i)=>i===target.curve?next:curve)};
+ if(graph.shadings)result.shadings=graph.shadings.filter(shade=>
+  shade.mode==='rectangle'||(shade.curve!==target.curve&&(shade.mode!=='between'||shade.otherCurve!==target.curve))||!shadingIssue(result,shade));
+ return graphSchema.parse(result);
 }
 
 export function createRectangleShading(graph:Graph,a:Point,b:Point,axis:YAxis='left'):Shading{
