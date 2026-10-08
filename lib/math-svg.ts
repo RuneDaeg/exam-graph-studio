@@ -1,11 +1,17 @@
 import katex from 'katex';
 import {parse, type Font} from 'opentype.js';
+import {graphFontFamilies,type Style} from './graph';
 const NS='http://www.w3.org/2000/svg';
 const fonts=new Map<string,Promise<Font>>();
 const readyLabels=new Map<string,{content:string;width:number}>();
 const labels=new Map<string,Promise<{content:string;width:number}>>();
 const xml=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]!));
 const round=(n:number)=>Math.round(n*1000)/1000;
+const labelKey=(tex:string,size:number,font:Style['font'])=>JSON.stringify([tex,size,font]);
+function koreanFont(doc:Document):Style['font']{
+ const value=doc.documentElement.getAttribute('data-korean-font');
+ return value==='sans'||value==='dotum'?value:'serif';
+}
 export function toTex(value:string){
  let text=value.trim().replace(/^\$+|\$+$/g,'').replace(/^\\\(|\\\)$/g,'');
  if(text.includes('\\'))return text;
@@ -33,12 +39,18 @@ function serializePath(font:Font,char:string,x:number,y:number,size:number){
   return `C${round(c.x1)} ${round(c.y1)} ${round(c.x2)} ${round(c.y2)} ${round(c.x)} ${round(c.y)}`;
  }).join('');
 }
-async function shapeLabel(tex:string,size:number){
- const key=tex+'|'+size;const cached=labels.get(key);if(cached)return cached.then(value=>{readyLabels.set(key,value);return value;});
+async function shapeLabel(tex:string,size:number,korean:Style['font']){
+ const key=labelKey(tex,size,korean);const cached=labels.get(key);if(cached)return cached.then(value=>{readyLabels.set(key,value);return value;});
  const promise=(async()=>{
   const host=document.createElement('span');host.setAttribute('aria-hidden','true');host.style.cssText=`position:fixed;left:-10000px;top:0;display:inline-block;visibility:hidden;white-space:nowrap;line-height:normal;font-variant-ligatures:none;font-size:${size}px;pointer-events:none;`;
   const math=document.createElement('span');
   katex.render(tex,math,{output:'html',throwOnError:true,trust:false,strict:'ignore',maxSize:5,maxExpand:100});
+  // Measure Korean with the same family that the exported SVG will use.
+  // Limit the override to Korean glyph spans so KaTeX's math faces stay intact.
+  for(const el of Array.from(math.querySelectorAll<HTMLElement>('span'))){
+   const koreanText=Array.from(el.childNodes).some(node=>node.nodeType===Node.TEXT_NODE&&/^[\s\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7ff]+$/.test(node.textContent||'')&&/\S/.test(node.textContent||''));
+   if(el.classList.contains('hangul_fallback')||koreanText)el.style.fontFamily=graphFontFamilies[korean];
+  }
   const katexRoot=math.querySelector<HTMLElement>('.katex');if(katexRoot)katexRoot.style.fontSize=size+'px';
   const marker=document.createElement('span');marker.style.cssText='display:inline-block;width:0;height:0;padding:0;margin:0;vertical-align:baseline;';host.appendChild(math);host.appendChild(marker);document.body.appendChild(host);
   try{
@@ -58,7 +70,7 @@ async function shapeLabel(tex:string,size:number){
      const localMarker=document.createElement('span');localMarker.style.cssText='display:inline-block;width:0;height:0;padding:0;margin:0;vertical-align:baseline;';node.parentNode!.insertBefore(localMarker,node.nextSibling);const localBaseline=localMarker.getBoundingClientRect().top;localMarker.remove();
      const x=rect.left-root.left,y=localBaseline-baseline;
      if(font&&font.hasChar(char)){content+=`<path d="${serializePath(font,char,x,y,fs)}"/>`;}
-     else{content+=`<text x="${round(x)}" y="${round(y)}" font-size="${fs}" font-family="'AppleMyungjo', 'Batang', serif" font-style="normal">${xml(char)}</text>`;}
+     else{content+=`<text x="${round(x)}" y="${round(y)}" font-size="${fs}" font-family="${xml(s.fontFamily)}" font-style="${xml(s.fontStyle)}" font-weight="${xml(s.fontWeight)}">${xml(char)}</text>`;}
     }
    }
    // Fractions, overlines and vincula are CSS borders in KaTeX's layout.
@@ -72,7 +84,7 @@ async function shapeLabel(tex:string,size:number){
 const isMath=(line:string)=>/[A-Za-z0-9\\πθλμΩαβγδω°′_^]/.test(line);
 function materialize(source:string,allowMissing:boolean,shapes=readyLabels):{svg:string;errors:string[]}|null{
  if(typeof DOMParser==='undefined')return null;
- const doc=new DOMParser().parseFromString(source,'image/svg+xml');const errors:string[]=[];let missing=false;
+ const doc=new DOMParser().parseFromString(source,'image/svg+xml');const korean=koreanFont(doc),errors:string[]=[];let missing=false;
  for(const el of Array.from(doc.querySelectorAll<SVGTextElement>('text[data-label]'))){
   const raw=el.getAttribute('data-label')||'',x=Number(el.getAttribute('x')),y=Number(el.getAttribute('y')),size=Number(el.getAttribute('font-size')),anchor=el.getAttribute('text-anchor');
   const group=doc.createElementNS(NS,'g');group.setAttribute('fill','#151515');group.setAttribute('aria-label',raw);group.setAttribute('data-typeset','katex');
@@ -80,7 +92,7 @@ function materialize(source:string,allowMissing:boolean,shapes=readyLabels):{svg
   let incomplete=false;
   for(const [index,line] of raw.split('\n').entries()){
    if(!isMath(line)){const text=doc.createElementNS(NS,'text');text.setAttribute('x',String(x));text.setAttribute('y',String(y+index*size*1.2));text.setAttribute('font-size',String(size));text.setAttribute('text-anchor',anchor||'middle');text.textContent=line;group.appendChild(text);continue;}
-   const shaped=shapes.get(toTex(line)+'|'+size);if(!shaped){missing=true;incomplete=true;break;}
+   const shaped=shapes.get(labelKey(toTex(line),size,korean));if(!shaped){missing=true;incomplete=true;break;}
    const inner=doc.createElementNS(NS,'g');const offset=anchor==='end'?-shaped.width:anchor==='middle'?-shaped.width/2:0;inner.setAttribute('transform',`translate(${round(x+offset)} ${round(y+index*size*1.2)})`);inner.innerHTML=shaped.content;group.appendChild(inner);
   }
   if(incomplete){errors.push(raw);if(allowMissing)el.setAttribute('fill','#ad3939');}else el.replaceWith(group);
@@ -92,10 +104,10 @@ function materialize(source:string,allowMissing:boolean,shapes=readyLabels):{svg
 export function typesetSvgCached(source:string){return materialize(source,false);}
 export async function typesetSvg(source:string):Promise<{svg:string;errors:string[]}>{
  const cached=typesetSvgCached(source);if(cached)return cached;
- const doc=new DOMParser().parseFromString(source,'image/svg+xml');const shapes=new Map<string,{content:string;width:number}>();
+ const doc=new DOMParser().parseFromString(source,'image/svg+xml');const korean=koreanFont(doc),shapes=new Map<string,{content:string;width:number}>();
  await Promise.all(Array.from(doc.querySelectorAll('text[data-label]')).flatMap(el=>{
   const size=Number(el.getAttribute('font-size'));
-  return (el.getAttribute('data-label')||'').split('\n').filter(isMath).map(line=>{const tex=toTex(line);return shapeLabel(tex,size).then(value=>shapes.set(tex+'|'+size,value)).catch(()=>null);});
+  return (el.getAttribute('data-label')||'').split('\n').filter(isMath).map(line=>{const tex=toTex(line);return shapeLabel(tex,size,korean).then(value=>shapes.set(labelKey(tex,size,korean),value)).catch(()=>null);});
  }));
  return materialize(source,true,shapes)!;
 }

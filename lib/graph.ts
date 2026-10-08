@@ -326,7 +326,12 @@ export function shadingIssue(graph:Graph,shade:Shading):string{
  const [start,end]=shadingRange(graph,shade);
  return start<end?'':'선과 음영 구간이 현재 축 범위 안에서 겹쳐야 합니다.';
 }
-export type Style = {lineWidth:number;fontSize:number;guides:boolean;arrows:boolean;transparent:boolean;width:number;height:number;font:'serif'|'sans'};
+export type Style = {lineWidth:number;fontSize:number;guides:boolean;arrows:boolean;transparent:boolean;width:number;height:number;font:'serif'|'sans'|'dotum'};
+export const graphFontFamilies:Record<Style['font'],string>={
+ serif:"'Times New Roman', 'Noto Serif KR', 'Batang', serif",
+ sans:"'Arial', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif",
+ dotum:"'Dotum', '돋움', 'AppleGothic', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif",
+};
 export const defaultStyle:Style={lineWidth:2.5,fontSize:23,guides:true,arrows:true,transparent:false,width:760,height:540,font:'serif'};
 const curve=(name:string,pts:number[][],opts:Partial<Graph['curves'][number]>={}):Graph['curves'][number]=>({name,points:pts.map(([x,y])=>({x,y})),dashed:false,smooth:false,arrows:false,dots:false,...opts});
 const ticks=(values:number[],labels?:string[])=>values.map((value,i)=>({value,label:labels?.[i]??String(value)}));
@@ -403,7 +408,7 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
   }
   shadePaths+=`<path data-shading="${index}" d="${d} Z" fill="${shade.pattern==='hatch'?`url(#${hatch})`:'#151515'}" fill-rule="evenodd" opacity="${shade.opacity}" clip-path="url(#${clip})"/>`;
  }
- let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath>${shadeDefs}</defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${s.font==='serif'?"'Times New Roman', 'Noto Serif KR', 'Batang', serif":"'Arial', 'Apple SD Gothic Neo', sans-serif"}" font-style="normal">${shadePaths}`;
+ let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" data-korean-font="${s.font}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath>${shadeDefs}</defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${graphFontFamilies[s.font]}" font-style="normal">${shadePaths}`;
  if(s.guides)out+=`<g stroke="#666" stroke-width="${s.lineWidth*.6}" stroke-dasharray="5 4" clip-path="url(#${id}-clip)">${g.guides.map(p=>line(X(p.x1),Y(p.y1),X(p.x2),Y(p.y2))).join('')}</g>`;
  out+=`<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${line(L,oy,R+20,oy,a)}${line(ox,B,ox,T-22,a)}</g>`;
  out+=text(R+20,oy+43,g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,T-25,g.yLabel,'end',s.fontSize,'axis:y')+(g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0?text(ox-15,oy+27,'0'):'');
