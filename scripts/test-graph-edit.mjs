@@ -12,8 +12,8 @@ try{
   const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
   await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
  }
- const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
- const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
+ const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray,distributionValue,withDistribution,freeDistribution,distributionPeakIndex}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
+ const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading,updateDistribution}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  assert.deepEqual(parseCoordinates('(1e-7, -2.5E+2), (+.5, 3.)',true),[{x:1e-7,y:-250},{x:.5,y:3}]);
  assert.deepEqual(parseCoordinates('x축 시간, (0,0), (2,3), 부드러운 곡선'),[{x:0,y:0},{x:2,y:3}],'natural coordinate prompts remain permissive by default');
  assert.throws(()=>parseCoordinates('(0,0), (2,3), (4,',true),/좌표 형식/);
@@ -281,7 +281,104 @@ try{
  }
  assert.deepEqual(pv,pvOriginal);
 
- const distribution=structuredClone(presets.find(p=>p.id==='distribution').graph);
+ const modeledDistribution=structuredClone(presets.find(p=>p.id==='distribution').graph);
+ const modeledOriginal=structuredClone(modeledDistribution);
+ const model=modeledDistribution.curves[0].distribution;
+ assert.deepEqual(model,{kind:'gamma',origin:0,peak:2,height:1,power:3,baseline:0,end:10});
+ assert.equal(distributionValue(model,-1),0);
+ assert.equal(distributionValue(model,0),0);
+ assert.equal(distributionValue(model,2),1);
+ assert.ok(Math.abs(distributionValue(model,4)-8*Math.exp(-3))<1e-15,'gamma values use the analytic formula');
+ const normalized=graphSchema.parse({...modeledDistribution,curves:[{...modeledDistribution.curves[0],points:[{x:9,y:9}],smooth:false}]});
+ assert.deepEqual(normalized.curves[0].points,modeledDistribution.curves[0].points,'formula metadata is canonical even when supplied samples are stale');
+ assert.equal(normalized.curves[0].smooth,true);
+ assert.equal(graphSchema.parse({...base,curves:[{...base.curves[0],distribution:null}]}).curves[0].distribution,null);
+ assert.deepEqual(graphSchema.parse(base),base,'legacy documents without formula metadata are not changed');
+ for(const patch of [{origin:2},{peak:0},{peak:10},{end:2},{height:0},{height:-1},{height:NaN},{power:1.9},{power:80.1},{baseline:1000000},{kind:'normal'}])assert.equal(graphSchema.safeParse({...modeledDistribution,curves:[{...modeledDistribution.curves[0],distribution:{...model,...patch}}]}).success,false);
+ for(const parameters of [model,{...model,peak:4.5,power:5,height:.6},{...model,power:2},{...model,power:80},{...model,peak:1e-30,end:1e6},{...model,origin:-1e6,peak:-999999.9999,end:1e6,baseline:-3,height:2}]){
+  const curve=withDistribution({...modeledDistribution.curves[0],lineStyle:'dash-dot',dots:true,arrows:true},parameters);
+  assert.ok(curve.points.length>20&&curve.points.length<=500);
+  assert.equal(curve.points[0].x,parameters.origin);
+  assert.equal(curve.points.at(-1).x,parameters.end);
+  const peakIndex=distributionPeakIndex(curve);
+  assert.ok(peakIndex>0&&peakIndex<curve.points.length-1);
+  assert.deepEqual(curve.points[peakIndex],{x:parameters.peak,y:parameters.baseline+parameters.height});
+  assert.ok(curve.points.every((p,i)=>!i||p.x>curve.points[i-1].x));
+  let area=0;
+  for(let segment=0;segment<curve.points.length-1;segment++){
+   const a=curve.points[segment],b=curve.points[segment+1];
+   let last=a.y;
+   for(const t of [.25,.5,.75,1]){
+    const p=pointOnCurve(curve,segment,t);
+    assert.ok(Number.isFinite(p.x)&&Number.isFinite(p.y));
+    assert.ok(Math.abs(p.y-distributionValue(parameters,p.x))<=parameters.height*1.1e-5,'the drawn cubic must agree with the formula across each segment');
+    assert.ok(segment<peakIndex?p.y>=last-parameters.height*1e-6:p.y<=last+parameters.height*1e-6,'formula curves have a single peak without extra ripples');
+    last=p.y;
+   }
+   area+=(b.x-a.x)*(a.y+4*pointOnCurve(curve,segment,.5).y+b.y-6*parameters.baseline)/6;
+  }
+  if(parameters===model){
+   let referenceArea=0;
+   for(let i=0;i<10000;i++)referenceArea+=distributionValue(model,(i+.5)*.001)*.001;
+   assert.ok(Math.abs(area-referenceArea)<1e-5,'curve area retains analytic accuracy');
+  }
+  const graph={...modeledDistribution,curves:[curve],shadings:[{curve:0,mode:'baseline',baseline:parameters.baseline,xStart:parameters.origin,xEnd:parameters.end,pattern:'hatch',opacity:.2}]};
+  const svg=renderGraph(graph),path=curvePath(graph),fill=svg.match(/data-shading="0" d="([^"]+)"/)?.[1];
+  assert.ok(path.includes('C')&&!path.includes('L'));
+  if(fill)assert.ok(fill.startsWith(path),'formula shading shares the precise curve boundary');
+  assert.ok(!/NaN|Infinity/.test(svg));
+  assert.equal((svg.match(/<circle /g)||[]).length,1,'formula markers show only the peak');
+  assert.equal(curveArrows(graph).length,1,'formula direction arrows must not repeat on every sample');
+  assert.ok(svg.includes('stroke-dasharray="10 5 0 5"'),'formula curves preserve line style');
+ }
+ const formulaCurve=modeledDistribution.curves[0],peakIndex=distributionPeakIndex(formulaCurve);
+ // Cubic endpoint derivatives must equal the formula on both sides of every
+ // knot, including the zero derivative at the peak. This catches the visible
+ // shoulders produced by unrelated interpolant slopes between sparse samples.
+ const expectedDerivative=x=>x<=model.origin?0:(distributionValue(model,x)-model.baseline)*model.power*(1/(x-model.origin)-1/(model.peak-model.origin));
+ for(let i=0;i<formulaCurve.points.length-1;i++){
+  const values=[0,1/3,2/3,1].map(t=>pointOnCurve(formulaCurve,i,t).y),h=formulaCurve.points[i+1].x-formulaCurve.points[i].x;
+  const left=(-11*values[0]+18*values[1]-9*values[2]+2*values[3])/(2*h);
+  const right=(11*values[3]-18*values[2]+9*values[1]-2*values[0])/(2*h);
+  assert.ok(Math.abs(left-expectedDerivative(formulaCurve.points[i].x))<1e-9);
+  assert.ok(Math.abs(right-expectedDerivative(formulaCurve.points[i+1].x))<1e-9);
+ }
+ assert.deepEqual(graphSchema.parse(JSON.parse(JSON.stringify(modeledDistribution))),modeledDistribution,'saved formula graphs rebuild reproducibly');
+ const peakEdited=movePoint(modeledDistribution,0,peakIndex,3,.8);
+ assert.equal(peakEdited.curves[0].distribution.peak,3);
+ assert.equal(peakEdited.curves[0].distribution.height,.8);
+ assert.ok(peakEdited.curves[0].points.every(p=>p.y===distributionValue(peakEdited.curves[0].distribution,p.x)));
+ assert.deepEqual(movePoint(modeledDistribution,0,peakIndex,2,1),modeledDistribution,'formula no-op edits preserve canonical coordinates');
+ for(const [x,y] of [[-1e6,-1e6],[1e6,1e6]]){
+  const next=movePoint(modeledDistribution,0,peakIndex,x,y),m=next.curves[0].distribution;
+  assert.ok(m.origin<m.peak&&m.peak<m.end&&m.height>0);
+  assert.ok(m.peak>=next.xMin&&m.peak<=next.xMax&&m.baseline+m.height<=next.yMax);
+ }
+ assert.throws(()=>movePoint(modeledDistribution,0,0,.5,.5),/자유 곡선/);
+ assert.throws(()=>insertCurvePoint(modeledDistribution,0,peakIndex,.5),/자유 곡선/);
+ const reshaped=updateDistribution(modeledDistribution,0,{power:8,end:11});
+ assert.equal(reshaped.curves[0].distribution.power,8);
+ assert.equal(reshaped.curves[0].points.at(-1).x,11);
+ assert.throws(()=>updateDistribution(modeledDistribution,0,{peak:20}));
+ assert.throws(()=>updateDistribution(base,0,{power:8}));
+ const modelTranslated=moveCurve(modeledDistribution,0,100,100),translatedModel=modelTranslated.curves[0].distribution;
+ assert.deepEqual(translatedModel,{...model,origin:1,peak:3,end:11,baseline:.30000000000000004});
+ const followModel={...modeledDistribution,labels:[{x:2,y:1,text:'정점',dx:0,dy:0}],guides:[{x1:2,y1:0,x2:2,y2:1}],shadings:[{curve:0,mode:'baseline',baseline:0,xStart:0,xEnd:10,pattern:'solid',opacity:.2}]};
+ const followedPeak=movePoint(followModel,0,peakIndex,3,.8,true);
+ assert.deepEqual(followedPeak.labels[0],{x:3,y:.8,text:'정점',dx:0,dy:0});
+ assert.deepEqual(followedPeak.guides[0],{x1:3,y1:0,x2:3,y2:.8});
+ assert.deepEqual(followedPeak.shadings,followModel.shadings);
+ const freed=freeDistribution(formulaCurve);
+ assert.equal(freed.distribution,undefined);
+ assert.deepEqual(freed.points,formulaCurve.points);
+ assert.equal(freed.smooth,true);
+ const freeGraph={...modeledDistribution,curves:[freed]};
+ assert.equal(insertCurvePoint(freeGraph,0,3,.5).graph.curves[0].points.length,freed.points.length+1);
+ assert.deepEqual(modeledDistribution,modeledOriginal,'model edits, conversion and render must not mutate input');
+ // Keep sparse historical distribution fixtures to protect ordinary free-curve
+ // editing independently of the new analytic distribution preset.
+ const sparseXs=[[0,.35,.7,1.1,1.5,2,2.7,3.5,4.6,6,8,10],[0,.7,1.5,2.3,3.3,4.5,5.8,7.2,8.6,10]];
+ const distribution={...modeledDistribution,curves:modeledDistribution.curves.map((c,i)=>({...freeDistribution(c),points:sparseXs[i].map(x=>({x,y:distributionValue(c.distribution,x)}))}))};
  const distributionOriginal=structuredClone(distribution);
  const ordered=curve=>curve.points.every((p,i)=>i===0||p.x>curve.points[i-1].x);
  function smoothPathsStayWithinKnots(graph){
@@ -394,5 +491,5 @@ try{
  assert.throws(()=>adjustText(fixture,{kind:'point',curve:0,index:0},'A'));
  assert.deepEqual(fixture,fixtureOriginal);
  for(const graph of [clamped,shifted,backwards,followed,followedCurve,labelMove])assert.equal(graphSchema.safeParse(graph).success,true);
- console.log('PASS: five line styles and legacy compatibility across widths, shading boundaries and clipping, immutable insertion and nearest cubic points, curve deletion references, connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
+ console.log('PASS: analytic gamma values, derivative continuity and adaptive sampling, immutable formula edits and conversion, five line styles and legacy compatibility across widths, shading boundaries and clipping, immutable insertion and nearest cubic points, curve deletion references, connection mode eligibility and reversible SVG paths, bounds, smooth knot spacing and cubic export, repeated and tiny-range edits, closed loops, optional follow, text validation, immutable edits');
 }finally{await rm(temp,{recursive:true,force:true});}

@@ -2,17 +2,80 @@ import { z } from 'zod';
 const num = z.number().finite().min(-1000000).max(1000000);
 const point = z.object({x:num,y:num});
 const tick = z.object({value:num,label:z.string().max(80)});
+const distributionSchema=z.object({kind:z.literal('gamma'),origin:num,peak:num,height:num.positive(),power:z.number().finite().min(2).max(80),baseline:num,end:num}).superRefine((model,ctx)=>{
+ if(!(model.origin<model.peak&&model.peak<model.end))ctx.addIssue({code:z.ZodIssueCode.custom,path:['peak'],message:'분포의 시작 < 꼭짓점 < 끝 순서로 입력해 주세요.'});
+ if(model.baseline+model.height>1000000)ctx.addIssue({code:z.ZodIssueCode.custom,path:['height'],message:'기준 높이와 분포 높이의 합은 1,000,000 이하여야 합니다.'});
+});
+export type Distribution=z.infer<typeof distributionSchema>;
+type DistributionPoint={x:number;y:number};
+export function distributionValue(model:Distribution,x:number):number{
+ if(x<=model.origin)return model.baseline;
+ if(x===model.peak)return model.baseline+model.height;
+ const z=(x-model.origin)/(model.peak-model.origin);
+ if(!Number.isFinite(z))return model.baseline;
+ const delta=z-1,exponent=model.power*(Math.log(z)-delta);
+ return model.baseline+model.height*Math.exp(Math.min(0,exponent));
+}
+function distributionTangentOffset(model:Distribution,x:number,h:number):number{
+ const z=(x-model.origin)/(model.peak-model.origin);
+ if(z<=0||z===1||!Number.isFinite(z)||distributionValue(model,x)===model.baseline)return 0;
+ // Logarithms avoid overflowing the world-space derivative for narrow curves.
+ const logMagnitude=Math.log(model.height)+model.power*(Math.log(z)+1-z)+Math.log(model.power)+Math.log(Math.abs(1-z))-Math.log(z)+Math.log(h)-Math.log(model.peak-model.origin);
+ return Math.sign(1-z)*Math.exp(logMagnitude);
+}
+function distributionControls(model:Distribution,from:DistributionPoint,to:DistributionPoint){
+ const h=to.x-from.x;
+ return {c1:{x:from.x+h/3,y:from.y+distributionTangentOffset(model,from.x,h)/3},c2:{x:to.x-h/3,y:to.y-distributionTangentOffset(model,to.x,h)/3}};
+}
+function sampleDistribution(model:Distribution):DistributionPoint[]{
+ // Seed around the mode in dimensionless coordinates. Uniform sampling across
+ // a very long domain could miss a narrow peak altogether.
+ const xs=[model.origin,model.peak],width=model.peak-model.origin;
+ for(let z=2;z<2048;z*=2){
+  const x=model.origin+width*z;
+  if(x>=model.end)break;
+  if(x>xs.at(-1)!)xs.push(x);
+  if(distributionValue(model,x)===model.baseline)break;
+ }
+ xs.push(model.end);
+ const samples=xs.map(x=>({x,y:distributionValue(model,x)}));
+ const error=(from:DistributionPoint,to:DistributionPoint)=>{
+  if((from.x+to.x)/2===from.x||(from.x+to.x)/2===to.x)return 0;
+  const {c1,c2}=distributionControls(model,from,to);
+  let largest=0;
+  for(const t of [.25,.5,.75]){
+   const u=1-t,x=from.x+(to.x-from.x)*t;
+   const y=from.y+3*u*u*t*(c1.y-from.y)+3*u*t*t*(c2.y-from.y)+t*t*t*(to.y-from.y);
+   largest=Math.max(largest,Math.abs(y-distributionValue(model,x))/model.height);
+  }
+  // Ordered controls prevent tiny artificial extrema at the long tail.
+  const lo=Math.min(from.y,to.y),hi=Math.max(from.y,to.y);
+  for(const c of [c1,c2])largest=Math.max(largest,(lo-c.y)/model.height,(c.y-hi)/model.height);
+  return largest;
+ };
+ const errors=samples.slice(1).map((to,i)=>error(samples[i],to));
+ while(samples.length<500){
+  let largest=0,index=-1;
+  errors.forEach((value,i)=>{if(value>largest){largest=value;index=i;}});
+  if(largest<=1e-6||index<0)break;
+  const from=samples[index],to=samples[index+1],x=from.x+(to.x-from.x)/2,middle={x,y:distributionValue(model,x)};
+  samples.splice(index+1,0,middle);
+  errors.splice(index,1,error(from,middle),error(middle,to));
+ }
+ return samples;
+}
 const lineStyle = z.enum(['solid','dashed','dotted','dash-dot','dash-dot-dot']);
 const shading = z.object({curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed','rectangle']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,yStart:num.optional(),yEnd:num.optional(),pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)}).superRefine((shade,ctx)=>{
  if(shade.mode!=='rectangle')return;
  if(shade.xStart>=shade.xEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['xEnd'],message:'사각형의 가로 끝은 시작보다 커야 합니다.'});
  if(shade.yStart===undefined||shade.yEnd===undefined||shade.yStart>=shade.yEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['yEnd'],message:'사각형의 세로 시작과 끝을 입력하고 끝을 더 크게 설정해 주세요.'});
 });
+const curveSchema=z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean(),distribution:distributionSchema.nullable().optional()}).transform(curve=>curve.distribution?{...curve,points:sampleDistribution(curve.distribution),smooth:true}:curve);
 export const graphSchema = z.object({
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
  xMin:num,xMax:num,yMin:num,yMax:num,
  xTicks:z.array(tick).max(30),yTicks:z.array(tick).max(30),
- curves:z.array(z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean()})).max(12),
+ curves:z.array(curveSchema).max(12),
  shadings:z.array(shading).max(20).optional(),
  guides:z.array(z.object({x1:num,y1:num,x2:num,y2:num})).max(80),
  labels:z.array(z.object({x:num,y:num,text:z.string().max(120),dx:num,dy:num})).max(40),
@@ -23,6 +86,16 @@ export type LineStyle = z.infer<typeof lineStyle>;
 export type Shading = NonNullable<Graph['shadings']>[number];
 type Curve = Graph['curves'][number];
 type Point = Curve['points'][number];
+export function withDistribution(curve:Curve,model:Distribution):Curve{
+ return curveSchema.parse({...curve,distribution:model});
+}
+export function freeDistribution(curve:Curve):Curve{
+ const {distribution:_,...free}=curve;
+ return free;
+}
+export function distributionPeakIndex(curve:Curve):number{
+ return curve.distribution?curve.points.findIndex(p=>p.x===curve.distribution!.peak):-1;
+}
 type Segment = {from:Point;to:Point;c1?:Point;c2?:Point};
 export function curveLineStyle(curve:Pick<Curve,'lineStyle'|'dashed'>):LineStyle{
  return curve.lineStyle??(curve.dashed?'dashed':'solid');
@@ -46,6 +119,7 @@ export function smoothConnectionIssue(points:Graph['curves'][number]['points']):
 // direction arrows and insertion. Affine scaling preserves these cubics.
 function curveSegments(curve:Curve):Segment[]{
  const points=curve.points,smooth=curve.smooth&&!smoothConnectionIssue(points);
+ if(curve.distribution)return points.slice(1).map((to,i)=>({from:points[i],to,...distributionControls(curve.distribution!,points[i],to)}));
  const tangentOffset=(i:number,h:number)=>{
   if(i===0)return points[1].y-points[0].y;
   if(i===points.length-1)return points[i].y-points[i-1].y;
@@ -167,16 +241,14 @@ const guide=(x1:number,y1:number,x2:number,y2:number)=>({x1,y1,x2,y2});
 const label=(x:number,y:number,text:string,dx=0,dy=-14)=>({x,y,text,dx,dy});
 const base:Graph={title:'전류의 시간 변화',xLabel:'시간',yLabel:'I_1',xMin:0,xMax:5,yMin:0,yMax:4,xTicks:ticks([1,2,3,4],['t_0','2t_0','3t_0','4t_0']),yTicks:ticks([1,2,3],['I_0','2I_0','3I_0']),curves:[curve('전류',[[0,0],[2,3],[4,1]])],guides:[1,2,3].map(y=>guide(0,y,4,y)).concat([1,2,3,4].map(x=>guide(x,0,x,3))),labels:[],note:''};
 const samples=(f:(x:number)=>number,a:number,b:number,n=100)=>Array.from({length:n+1},(_,i)=>[a+(b-a)*i/n,f(a+(b-a)*i/n)]);
-// Sparse shape controls keep distribution edits broad; the renderer interpolates
-// between them instead of moving one isolated sample in a dense polyline.
-const distributionPoints=(xs:number[],peak:number,power:number,height=1)=>xs.map(x=>[x,height*Math.pow(x/peak,power)*Math.exp(power-power*x/peak)]);
+const distributionCurve=(name:string,peak:number,power:number,height=1,dashed=false)=>withDistribution(curve(name,[[0,0]],{dashed}),{kind:'gamma',origin:0,peak,height,power,baseline:0,end:10});
 export const presets:{id:string;subject:string;name:string;description:string;graph:Graph}[]=[
  {id:'current',subject:'물리학',name:'전류 · 시간',description:'시간에 따라 증가한 뒤 감소하는 전류',graph:base},
  {id:'pv',subject:'물리학',name:'기체의 순환 과정',description:'A → B → C → D → A의 P–V 그래프',graph:{...base,title:'기체의 순환 과정',xLabel:'V',yLabel:'P',xMax:3,yMax:2.7,xTicks:ticks([1,2],['V_0','2V_0']),yTicks:ticks([1,2],['P_0','2P_0']),curves:[curve('순환 과정',[[1,1],[1,2],[2,2],[2,1],[1,1]],{arrows:true,dots:true})],guides:[guide(0,1,2,1),guide(0,2,2,2),guide(1,0,1,1),guide(2,0,2,1)],labels:[label(1,1,'A',-22,26),label(1,2,'B',0,-20),label(2,2,'C',0,-20),label(2,1,'D',24,20)]}},
  {id:'wave',subject:'물리학',name:'두 매질의 파동',description:'경계 x = 6에서 파장이 달라지는 파동',graph:{...base,title:'두 매질에서의 파동',xLabel:'x (m)',yLabel:'변위',xMax:16,yMin:-1.5,yMax:1.7,xTicks:ticks([1,2,3,4,5,6,8,10,12,14]),yTicks:[],curves:[curve('파동',samples(x=>x<=6?-Math.cos(Math.PI*x/2):Math.cos(Math.PI*(x-6)/4),0,15.5,200))],guides:[guide(6,-1.3,6,1.4)],labels:[label(3,1.3,'매질 A'),label(10.5,1.3,'매질 B')]}},
  {id:'distance',subject:'물리학',name:'거리 · 시간',description:'두 물체 사이의 거리 변화',graph:{...base,title:'B와 C 사이의 거리',xLabel:'t (초)',yLabel:'거리\n(m)',xMax:8.5,yMax:17,xTicks:ticks([1,2,3,4,5,6,7]),yTicks:ticks([8,12,14]),curves:[curve('거리',[[0,12],[2,0],[4,8],[7.5,15]])],guides:[guide(0,8,4,8),guide(4,0,4,8),guide(0,14,7,14),guide(7,0,7,14)],labels:[]}},
  {id:'magnetic',subject:'물리학',name:'자기장 · 전류',description:'전류가 증가할수록 감소하는 자기장',graph:{...base,title:'자기장과 전류의 관계',xLabel:'I_P',yLabel:'B',xMax:2.1,yMax:3.7,xTicks:ticks([1,1.5],['I_0','1.5I_0']),yTicks:ticks([1],['B_1']),curves:[curve('자기장',[[0,3],[1.5,0]])],guides:[guide(0,1,1,1),guide(1,0,1,1)],labels:[]}},
- {id:'distribution',subject:'생명과학',name:'형질의 분포',description:'부리 크기에 따른 두 개체군의 분포',graph:{...base,title:'개체군의 형질 분포',xLabel:'부리 크기',yLabel:'개체 수',xMax:11,yMax:1.3,xTicks:[],yTicks:[],curves:[curve("P′",distributionPoints([0,.35,.7,1.1,1.5,2,2.7,3.5,4.6,6,8,10],2,3),{smooth:true}),curve('P',distributionPoints([0,.7,1.5,2.3,3.3,4.5,5.8,7.2,8.6,10],4.5,5,.6),{dashed:true,smooth:true})],guides:[],labels:[label(2.5,1,'P′',20,-5),label(6.3,.43,'P',12,-12)]}},
+ {id:'distribution',subject:'생명과학',name:'형질의 분포',description:'부리 크기에 따른 두 개체군의 분포',graph:{...base,title:'개체군의 형질 분포',xLabel:'부리 크기',yLabel:'개체 수',xMax:11,yMax:1.3,xTicks:[],yTicks:[],curves:[distributionCurve("P′",2,3),distributionCurve('P',4.5,5,.6,true)],guides:[],labels:[label(2.5,1,'P′',20,-5),label(6.3,.43,'P',12,-12)]}},
  {id:'chemistry',subject:'화학',name:'중화 반응의 온도',description:'혼합 용액의 최고 온도 비교',graph:{...base,title:'혼합 용액의 최고 온도',xLabel:'부피 (mL)',yLabel:'최고 온도\n(°C)',xMax:50,yMax:3.2,xTicks:ticks([20,30,40],['20\n40','30\n30','40\n20']),yTicks:ticks([1],['t_1']),curves:[curve('측정값',[[20,1]],{dots:true}),curve('측정값',[[30,2.7]],{dots:true}),curve('측정값',[[40,1]],{dots:true})],guides:[guide(0,1,45,1),...([20,30,40].map(x=>guide(x,0,x,3)))],labels:[label(7,0,'HCl\nNaOH',0,31),label(20,1,'(가)',24,-12),label(30,2.7,'(나)',24,-12),label(40,1,'(다)',24,-12)],note:'NaOH 부피는 HCl 부피와 합이 60 mL가 되도록 설정한 예시입니다.'}},
  {id:'spectrum',subject:'지구과학',name:'복사 에너지 분포',description:'연속 곡선과 흡수선이 있는 스펙트럼',graph:{...base,title:'파장에 따른 복사 에너지',xLabel:'파장',yLabel:'에너지의\n상대 세기',xMax:10.5,yMax:1.3,xTicks:[],yTicks:[],curves:[curve('ㄱ',samples(x=>Math.pow(x/1.5,2)*Math.exp(2-2*x/1.5),0,10,200)),curve('ㄴ',samples(x=>{const b=.65*Math.pow(x/1.6,2)*Math.exp(2-2*x/1.6);return b*(1-.65*Math.pow(Math.sin(x*9),18));},0,10,400))],guides:[],labels:[label(2.3,.85,'ㄱ',18,-15),label(2.4,.5,'ㄴ',18,-10)],note:'형태를 재현한 예시이며 실제 측정 스펙트럼은 아닙니다.'}}
 ];
@@ -231,8 +303,10 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||t.value===zx)return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
  g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||t.value===zy)return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
  for(const [ci,c] of g.curves.entries()){
-  const pts=c.points.map(p=>[X(p.x),Y(p.y)]),d=pathData(ci),dashArray=lineDashArray(curveLineStyle(c),s.lineWidth);
-  const arrowSegments=c.arrows?geometries[ci].map(segment=>{
+  const visiblePoints=c.distribution?[c.points[distributionPeakIndex(c)]]:c.points;
+  const pts=visiblePoints.filter(Boolean).map(p=>[X(p.x),Y(p.y)]),d=pathData(ci),dashArray=lineDashArray(curveLineStyle(c),s.lineWidth);
+  const arrowGeometry=c.distribution?[geometries[ci][Math.min(geometries[ci].length-1,distributionPeakIndex(c)+Math.floor((c.points.length-distributionPeakIndex(c))/4))]].filter(Boolean):geometries[ci];
+  const arrowSegments=c.arrows?arrowGeometry.map(segment=>{
    const p=segmentPoint(segment,.48),q=segmentPoint(segment,.56);
    return [X(p.x),Y(p.y),X(q.x),Y(q.y)];
   }):[];
