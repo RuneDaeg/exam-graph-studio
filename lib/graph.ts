@@ -108,26 +108,47 @@ function sampleDistribution(model:Distribution):DistributionPoint[]{
  }
  return samples;
 }
+const yAxis = z.enum(['left','right']);
+export type YAxis = z.infer<typeof yAxis>;
 const lineStyle = z.enum(['solid','dashed','dotted','dash-dot','dash-dot-dot']);
-const shading = z.object({curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed','rectangle']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,yStart:num.optional(),yEnd:num.optional(),pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)}).superRefine((shade,ctx)=>{
+const shading = z.object({yAxis:yAxis.optional(),curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed','rectangle']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,yStart:num.optional(),yEnd:num.optional(),pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)}).superRefine((shade,ctx)=>{
  if(shade.mode!=='rectangle')return;
  if(shade.xStart>=shade.xEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['xEnd'],message:'사각형의 가로 끝은 시작보다 커야 합니다.'});
  if(shade.yStart===undefined||shade.yEnd===undefined||shade.yStart>=shade.yEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['yEnd'],message:'사각형의 세로 시작과 끝을 입력하고 끝을 더 크게 설정해 주세요.'});
 });
-const curveSchema=z.object({name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean(),distribution:distributionSchema.nullable().optional(),conic:conicSchema.nullable().optional()})
+const curveSchema=z.object({yAxis:yAxis.optional(),name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean(),distribution:distributionSchema.nullable().optional(),conic:conicSchema.nullable().optional()})
  .refine(curve=>!(curve.distribution&&curve.conic),{path:['conic'],message:'한 선에는 분포 공식과 원·타원 공식을 함께 적용할 수 없습니다.'})
  .transform(curve=>curve.distribution?{...curve,points:sampleDistribution(curve.distribution),smooth:true}:curve.conic?{...curve,points:sampleConic(curve.conic),smooth:true}:curve);
 export const graphSchema = z.object({
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
  xMin:num,xMax:num,yMin:num,yMax:num,equalAxes:z.boolean().optional(),
  xTicks:z.array(tick).max(30),yTicks:z.array(tick).max(30),
+ rightYAxis:z.object({label:z.string().max(80),min:num,max:num,ticks:z.array(tick).max(30)}).nullable().optional(),
  curves:z.array(curveSchema).max(12),
  shadings:z.array(shading).max(20).optional(),
- guides:z.array(z.object({x1:num,y1:num,x2:num,y2:num})).max(80),
- labels:z.array(z.object({x:num,y:num,text:z.string().max(120),dx:num,dy:num})).max(40),
+ guides:z.array(z.object({yAxis:yAxis.optional(),x1:num,y1:num,x2:num,y2:num})).max(80),
+ labels:z.array(z.object({yAxis:yAxis.optional(),x:num,y:num,text:z.string().max(120),dx:num,dy:num})).max(40),
  note:z.string().max(1000)
-}).refine(g=>g.xMax>g.xMin&&g.yMax>g.yMin,{message:'축의 최댓값은 최솟값보다 커야 합니다.'});
+}).superRefine((g,ctx)=>{
+ if(!(g.xMax>g.xMin&&g.yMax>g.yMin))ctx.addIssue({code:z.ZodIssueCode.custom,message:'축의 최댓값은 최솟값보다 커야 합니다.'});
+ if(g.rightYAxis&&g.rightYAxis.max<=g.rightYAxis.min)ctx.addIssue({code:z.ZodIssueCode.custom,path:['rightYAxis','max'],message:'오른쪽 축의 최댓값은 최솟값보다 커야 합니다.'});
+ if(g.rightYAxis&&g.equalAxes)ctx.addIssue({code:z.ZodIssueCode.custom,path:['equalAxes'],message:'오른쪽 세로축을 사용할 때는 가로·세로 같은 축척을 해제해 주세요.'});
+ for(const key of ['curves','guides','labels','shadings'] as const)for(const [i,value] of (g[key]??[]).entries()){
+  if(value.yAxis==='right'&&!g.rightYAxis)ctx.addIssue({code:z.ZodIssueCode.custom,path:[key,i,'yAxis'],message:'오른쪽 세로축을 먼저 켜 주세요.'});
+ }
+ for(const [i,shade] of (g.shadings??[]).entries()){
+  if(shade.mode!=='rectangle'&&shade.yAxis!==undefined&&shade.yAxis!==(g.curves[shade.curve]?.yAxis??'left'))ctx.addIssue({code:z.ZodIssueCode.custom,path:['shadings',i,'yAxis'],message:'곡선 음영은 선택한 선의 세로축을 따릅니다.'});
+  if(shade.mode==='between'&&g.curves[shade.curve]&&g.curves[shade.otherCurve!]&&(g.curves[shade.curve].yAxis??'left')!==(g.curves[shade.otherCurve!].yAxis??'left'))ctx.addIssue({code:z.ZodIssueCode.custom,path:['shadings',i,'otherCurve'],message:'두 선 사이 음영은 같은 세로축을 사용하는 선끼리 설정해 주세요.'});
+ }
+});
 export type Graph = z.infer<typeof graphSchema>;
+export function yAxisRange(graph:Graph,axis:YAxis='left'):{min:number;max:number}{
+ if(axis==='right'){
+  if(!graph.rightYAxis)throw Error('오른쪽 세로축을 먼저 켜 주세요.');
+  return {min:graph.rightYAxis.min,max:graph.rightYAxis.max};
+ }
+ return {min:graph.yMin,max:graph.yMax};
+}
 export type LineStyle = z.infer<typeof lineStyle>;
 export type Shading = NonNullable<Graph['shadings']>[number];
 type Curve = Graph['curves'][number];
@@ -309,9 +330,14 @@ function shadingRange(graph:Graph,shade:Shading):[number,number]{
 }
 export function shadingIssue(graph:Graph,shade:Shading):string{
  if(!shading.safeParse(shade).success)return '음영의 좌표, 진하기, 선 선택 값을 확인해 주세요.';
- if(shade.mode==='rectangle')return Math.max(graph.xMin,shade.xStart)<Math.min(graph.xMax,shade.xEnd)&&Math.max(graph.yMin,shade.yStart!)<Math.min(graph.yMax,shade.yEnd!)?'':'사각형 음영이 현재 축 범위와 겹쳐야 합니다.';
+ if(shade.yAxis==='right'&&!graph.rightYAxis)return '오른쪽 세로축을 먼저 켜 주세요.';
+ if(shade.mode==='rectangle'){
+  const range=yAxisRange(graph,shade.yAxis);
+  return Math.max(graph.xMin,shade.xStart)<Math.min(graph.xMax,shade.xEnd)&&Math.max(range.min,shade.yStart!)<Math.min(range.max,shade.yEnd!)?'':'사각형 음영이 현재 축 범위와 겹쳐야 합니다.';
+ }
  const curve=graph.curves[shade.curve];
  if(!curve)return '음영을 적용할 선을 선택해 주세요.';
+ if(shade.yAxis!==undefined&&shade.yAxis!==(curve.yAxis??'left'))return '곡선 음영은 선택한 선의 세로축을 따릅니다.';
  if(shade.mode==='closed'){
   const first=curve.points[0],last=curve.points.at(-1);
   return curve.points.length>=4&&first.x===last?.x&&first.y===last.y?'':'닫힌 영역은 점이 4개 이상이고 첫 점과 마지막 점이 같아야 합니다.';
@@ -321,6 +347,7 @@ export function shadingIssue(graph:Graph,shade:Shading):string{
  if(shade.mode==='between'){
   const other=graph.curves[shade.otherCurve!];
   if(!other||shade.otherCurve===shade.curve)return '사이 영역을 만들 다른 선을 선택해 주세요.';
+  if((curve.yAxis??'left')!==(other.yAxis??'left'))return '두 선 사이 음영은 같은 세로축을 사용하는 선끼리 설정해 주세요.';
   if(!orderedFunction(other))return '두 선 모두 점이 2개 이상이고 왼쪽부터 순서대로 이어져야 합니다.';
  }
  const [start,end]=shadingRange(graph,shade);
@@ -349,15 +376,26 @@ export const presets:{id:string;subject:string;name:string;description:string;gr
  {id:'distribution',subject:'생명과학',name:'형질의 분포',description:'부리 크기에 따른 두 개체군의 분포',graph:{...base,title:'개체군의 형질 분포',xLabel:'부리 크기',yLabel:'개체 수',xMax:11,yMax:1.3,xTicks:[],yTicks:[],curves:[distributionCurve("P′",2,3),distributionCurve('P',4.5,5,.6,true)],guides:[],labels:[label(2.5,1,'P′',20,-5),label(6.3,.43,'P',12,-12)],note:'⚠ 개체 수준에서 그래프 변형은 실제 자연, 과학적 사실과 일치하지 않을 수 있으니 출제 시 유의하세요.'}},
  {id:'normal',subject:'공통',name:'정규분포',description:'평균 μ와 표준편차 σ로 조절하는 대칭 분포',graph:{...base,title:'정규분포',xLabel:'x',yLabel:'상대 도수',xMax:8.5,yMax:1.3,xTicks:ticks([3,4,5],['\\mu-\\sigma','\\mu','\\mu+\\sigma']),yTicks:[],curves:[withDistribution(curve('정규분포',[[0,0]]),{kind:'normal',origin:0,peak:4,sigma:1,height:1,baseline:0,end:8})],guides:[guide(0,1,4,1),guide(4,0,4,1)],labels:[],note:'평균 μ, 표준편차 σ와 봉우리 높이를 조절하는 정규분포 모양의 예시입니다.'}},
  {id:'chemistry',subject:'화학',name:'중화 반응의 온도',description:'혼합 용액의 최고 온도 비교',graph:{...base,title:'혼합 용액의 최고 온도',xLabel:'부피 (mL)',yLabel:'최고 온도\n(°C)',xMax:50,yMax:3.2,xTicks:ticks([20,30,40],['20\n40','30\n30','40\n20']),yTicks:ticks([1],['t_1']),curves:[curve('측정값',[[20,1]],{dots:true}),curve('측정값',[[30,2.7]],{dots:true}),curve('측정값',[[40,1]],{dots:true})],guides:[guide(0,1,45,1),...([20,30,40].map(x=>guide(x,0,x,3)))],labels:[label(7,0,'HCl\nNaOH',0,31),label(20,1,'(가)',24,-12),label(30,2.7,'(나)',24,-12),label(40,1,'(다)',24,-12)],note:'NaOH 부피는 HCl 부피와 합이 60 mL가 되도록 설정한 예시입니다.'}},
+ {id:'dual-axis',subject:'공통',name:'기온 · 상대 습도',description:'왼쪽 기온과 오른쪽 상대 습도를 함께 읽는 이중 축',graph:{...base,title:'기온과 상대 습도의 변화',xLabel:'시간 (\\mathrm{h})',yLabel:'기온\n(°C)',xMax:24,yMax:40,xTicks:ticks([0,6,12,18,24]),yTicks:ticks([10,20,30,40]),rightYAxis:{label:'상대 습도\n(\\%)',min:0,max:100,ticks:ticks([0,20,40,60,80,100])},equalAxes:false,curves:[curve('기온',[[0,18],[6,16],[12,27],[15,30],[18,25],[24,19]],{smooth:true}),curve('상대 습도',[[0,80],[6,90],[12,55],[15,40],[18,60],[24,78]],{smooth:true,yAxis:'right',lineStyle:'dash-dot'})],guides:[],labels:[label(14,31,'기온',0,-12),{...label(5,90,'상대 습도',0,-12),yAxis:'right'}],note:'이중 축의 읽기와 편집을 위한 가상 자료이며 실제 관측값은 아닙니다.'}},
  {id:'spectrum',subject:'지구과학',name:'복사 에너지 분포',description:'연속 곡선과 흡수선이 있는 스펙트럼',graph:{...base,title:'파장에 따른 복사 에너지',xLabel:'파장',yLabel:'에너지의\n상대 세기',xMax:10.5,yMax:1.3,xTicks:[],yTicks:[],curves:[curve('ㄱ',samples(x=>Math.pow(x/1.5,2)*Math.exp(2-2*x/1.5),0,10,200)),curve('ㄴ',samples(x=>{const b=.65*Math.pow(x/1.6,2)*Math.exp(2-2*x/1.6);return b*(1-.65*Math.pow(Math.sin(x*9),18));},0,10,400))],guides:[],labels:[label(2.3,.85,'ㄱ',18,-15),label(2.4,.5,'ㄴ',18,-10)],note:'형태를 재현한 예시이며 실제 측정 스펙트럼은 아닙니다.'}}
 ];
 const esc=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]!));
-function rich(s:string){return s.split(/(_\{[^}]+\}|\^\{[^}]+\}|_[A-Za-z0-9]+|\^[A-Za-z0-9]+)/).map(t=>/^[_^]/.test(t)?`<tspan baseline-shift="${t[0]==='_'?'sub':'super'}" font-size="70%">${esc(t.slice(1).replace(/[{}]/g,''))}</tspan>`:esc(t).replace(/([A-Za-z]+)/g,word=>/^(m|s|kg|mol|mL|Pa|Hz|cm|HCl|NaOH)$/.test(word)?word:word.replace(/[A-Za-z]/g,'<tspan font-style="italic">$&</tspan>'))).join('');}
+function rich(s:string){return s.split(/(_\{[^}]+\}|\^\{[^}]+\}|_[A-Za-z0-9]+|\^[A-Za-z0-9]+)/).map(t=>/^[_^]/.test(t)?`<tspan baseline-shift="${t[0]==='_'?'sub':'super'}" font-size="70%">${esc(t.slice(1).replace(/[{}]/g,''))}</tspan>`:t.split(/([A-Za-z]+)/).map(part=>/^[A-Za-z]+$/.test(part)?/^(m|s|kg|mol|mL|Pa|Hz|cm|HCl|NaOH)$/.test(part)?part:part.replace(/[A-Za-z]/g,'<tspan font-style="italic">$&</tspan>'):esc(part)).join('')).join('');}
 export function graphLayout(g:Graph,s:Style=defaultStyle){
  const w=s.width,h=s.height;
  let L=Math.min(w*.34,Math.max(Math.min(112,w*.2),Math.max(...g.yLabel.split('\n').map(t=>t.replace(/\\[a-zA-Z]+/g,'').replace(/[_^{}]/g,'').length))*s.fontSize*.8+22)),R=w-Math.min(95,w*.14),T=Math.min(66,h*.14),B=h-Math.min(95,h*.2);
  let equalScale:number|undefined;
- if(g.equalAxes??g.curves.some(curve=>!!curve.conic)){
+ if(g.rightYAxis){
+  // Reserve a full row for every extra title line so the unit cannot collide
+  // with a tick at the top of either independently scaled axis.
+  const titleLines=Math.max(g.yLabel.split('\n').length,g.rightYAxis.label.split('\n').length);
+  T+=Math.min(Math.max(0,h*.4-T),(titleLines-1)*s.fontSize*1.2);
+  const xTitleRows=g.xLabel.split('\n').length;
+  B=Math.min(B,h-Math.min(h*.4,39+1.85*s.fontSize+(xTitleRows-1)*s.fontSize*1.2));
+  const longest=Math.max(...g.rightYAxis.label.split('\n').map(t=>t.replace(/\\[a-zA-Z]+/g,'').replace(/[_^{}]/g,'').length),...g.rightYAxis.ticks.map(t=>t.label.length));
+  R=w-Math.min(w*.3,Math.max(112,longest*s.fontSize*.8+28));
+ }
+ if(!g.rightYAxis&&(g.equalAxes??g.curves.some(curve=>!!curve.conic))){
   // Fit the declared domain into the available rectangle at one shared unit
   // scale. Updating the bounds also keeps clipping, axes and inverse dragging
   // aligned with the centered plot, without modifying the saved axis limits.
@@ -369,18 +407,22 @@ export function graphLayout(g:Graph,s:Style=defaultStyle){
  }
  const dx=equalScale??(R-L)/(g.xMax-g.xMin),dy=equalScale??(B-T)/(g.yMax-g.yMin);
  const X=(x:number)=>L+(x-g.xMin)*dx,Y=(y:number)=>B-(y-g.yMin)*dy;
- const zx=Math.max(g.xMin,Math.min(0,g.xMax)),zy=Math.max(g.yMin,Math.min(0,g.yMax)),ox=X(zx),oy=Y(zy);
- return {w,h,L,R,T,B,dx,dy,X,Y,zx,zy,ox,oy,world:(x:number,y:number)=>({x:g.xMin+(x-L)/dx,y:g.yMin+(B-y)/dy})};
+ const zx=Math.max(g.xMin,Math.min(0,g.xMax)),zy=Math.max(g.yMin,Math.min(0,g.yMax)),ox=g.rightYAxis?L:X(zx),oy=Y(zy);
+ const dyFor=(axis:YAxis='left')=>axis==='left'?dy:(B-T)/(yAxisRange(g,axis).max-yAxisRange(g,axis).min);
+ const YFor=(y:number,axis:YAxis='left')=>axis==='left'?Y(y):B-(y-yAxisRange(g,axis).min)*dyFor(axis);
+ const worldFor=(x:number,y:number,axis:YAxis='left')=>({x:g.xMin+(x-L)/dx,y:yAxisRange(g,axis).min+(B-y)/dyFor(axis)});
+ return {w,h,L,R,T,B,dx,dy,X,Y,YFor,dyFor,zx,zy,ox,oy,world:(x:number,y:number)=>worldFor(x,y),worldFor};
 }
 export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
- const {w,h,L,R,T,B,X,Y,zx,zy,ox,oy}=graphLayout(g,s);
+ const {w,h,L,R,T,B,X,Y,YFor,zx,zy,ox,oy}=graphLayout(g,s);
  const n=(x:number)=>Math.round(x*100)/100;
  const text=(x:number,y:number,t:string,anchor='middle',size=s.fontSize,edit='')=>`<text ${edit?`data-edit="${edit}"`:''} data-label="${esc(t).replace(/\n/g,'&#10;')}" x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" font-size="${size}" fill="#151515">${t.split('\n').map((line,i)=>`<tspan x="${n(x)}" dy="${i?1.2:0}em">${rich(line)}</tspan>`).join('')}</text>`;
  const line=(x1:number,y1:number,x2:number,y2:number,extra='')=>`<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" ${extra}/>`;
  const a=s.arrows?`marker-end="url(#${id}-arrow)"`:'';
+ const axisTitleY=(label:string)=>T-25-(g.rightYAxis?(label.split('\n').length-1)*s.fontSize*1.2:0);
  const geometries=g.curves.map(curveSegments);
  const pathData=(ci:number,reverse=false,start='M')=>{
-  const curve=g.curves[ci],segments=geometries[ci];
+  const curve=g.curves[ci],segments=geometries[ci],Y=(value:number)=>YFor(value,curve.yAxis);
   const first=reverse?curve.points.at(-1):curve.points[0];
   if(!first)return '';
   let d=`${start}${n(X(first.x))},${n(Y(first.y))}`;
@@ -399,9 +441,10 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
   if(shade.pattern==='hatch')shadeDefs+=`<pattern id="${hatch}" patternUnits="userSpaceOnUse" width="7" height="7"><path d="M-1 1 L1 -1 M0 7 L7 0 M6 8 L8 6" fill="none" stroke="#151515" stroke-width="1.2"/></pattern>`;
   let d:string;
   if(shade.mode==='rectangle'){
+   const Y=(value:number)=>YFor(value,shade.yAxis);
    d=`M${n(X(shade.xStart))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yEnd!))} L${n(X(shade.xStart))},${n(Y(shade.yEnd!))}`;
   }else{
-   const curve=g.curves[shade.curve],first=curve.points[0],last=curve.points.at(-1)!;
+   const curve=g.curves[shade.curve],first=curve.points[0],last=curve.points.at(-1)!,Y=(value:number)=>YFor(value,curve.yAxis);
    d=pathData(shade.curve);
    if(shade.mode==='baseline')d+=` L${n(X(last.x))},${n(Y(shade.baseline))} L${n(X(first.x))},${n(Y(shade.baseline))}`;
    if(shade.mode==='between')d+=' '+pathData(shade.otherCurve!,true,'L');
@@ -409,12 +452,19 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
   shadePaths+=`<path data-shading="${index}" d="${d} Z" fill="${shade.pattern==='hatch'?`url(#${hatch})`:'#151515'}" fill-rule="evenodd" opacity="${shade.opacity}" clip-path="url(#${clip})"/>`;
  }
  let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" data-korean-font="${s.font}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath>${shadeDefs}</defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${graphFontFamilies[s.font]}" font-style="normal">${shadePaths}`;
- if(s.guides)out+=`<g stroke="#666" stroke-width="${s.lineWidth*.6}" stroke-dasharray="5 4" clip-path="url(#${id}-clip)">${g.guides.map(p=>line(X(p.x1),Y(p.y1),X(p.x2),Y(p.y2))).join('')}</g>`;
+ if(s.guides)out+=`<g stroke="#666" stroke-width="${s.lineWidth*.6}" stroke-dasharray="5 4" clip-path="url(#${id}-clip)">${g.guides.map(p=>line(X(p.x1),YFor(p.y1,p.yAxis),X(p.x2),YFor(p.y2,p.yAxis))).join('')}</g>`;
  out+=`<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${line(L,oy,R+20,oy,a)}${line(ox,B,ox,T-22,a)}</g>`;
- out+=text(R+20,oy+43,g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,T-25,g.yLabel,'end',s.fontSize,'axis:y')+(g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0?text(ox-15,oy+27,'0'):'');
- g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||t.value===zx)return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
- g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||t.value===zy)return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
+ out+=text(R+20,oy+(g.rightYAxis?31+1.5*s.fontSize:43),g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,axisTitleY(g.yLabel),g.yLabel,'end',s.fontSize,'axis:y')+(g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0?text(X(0)-15,oy+27,'0'):'');
+ g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||(g.rightYAxis?t.value===0&&g.yMin<=0&&g.yMax>=0:t.value===zx))return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
+ g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||(g.rightYAxis?t.value===0&&g.xMin===0:t.value===zy))return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
+ if(g.rightYAxis){
+  const right=g.rightYAxis;
+  out+=`<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${line(R,B,R,T-22,a)}</g>`;
+  out+=text(R+17,axisTitleY(right.label),right.label,'start',s.fontSize,'axis:right');
+  right.ticks.forEach((tick,i)=>{if(tick.value<right.min||tick.value>right.max)return;const y=YFor(tick.value,'right');out+=line(R-4,y,R+4,y,`stroke="#151515" stroke-width="1"`)+text(R+32,y+s.fontSize*.33,tick.label,'start',s.fontSize,`tick:right:${i}`);});
+ }
  for(const [ci,c] of g.curves.entries()){
+  const Y=(value:number)=>YFor(value,c.yAxis);
   const visiblePoints=c.distribution?[c.points[distributionPeakIndex(c)]]:c.conic?conicHandleIndices(c).map(i=>c.points[i]):c.points;
   const pts=visiblePoints.filter(Boolean).map(p=>[X(p.x),Y(p.y)]),d=pathData(ci),dashArray=lineDashArray(curveLineStyle(c),s.lineWidth);
   const arrowGeometry=c.distribution?[geometries[ci][Math.min(geometries[ci].length-1,distributionPeakIndex(c)+Math.floor((c.points.length-distributionPeakIndex(c))/4))]].filter(Boolean):c.conic?[0,4,8,12].map(i=>geometries[ci][i]):geometries[ci];
@@ -427,7 +477,7 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
   if(c.arrows)for(const [x,y,xx,yy] of arrowSegments)out+=line(x,y,xx,yy,`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);
   out+='</g>';
  }
- out+=g.labels.map((l,i)=>(l.text==='0'&&l.x===0&&l.y===0&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0)?'':text(X(l.x)+l.dx,Y(l.y)+l.dy,l.text,'middle',s.fontSize,`label:${i}`)).join('');return out+'</g></svg>';
+ out+=g.labels.map((l,i)=>((l.yAxis??'left')==='left'&&l.text==='0'&&l.x===0&&l.y===0&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0)?'':text(X(l.x)+l.dx,YFor(l.y,l.yAxis)+l.dy,l.text,'middle',s.fontSize,`label:${i}`)).join('');return out+'</g></svg>';
 }
 export function parseCoordinates(input:string,strict=false):{x:number;y:number}[]{
  const scalar='[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?';

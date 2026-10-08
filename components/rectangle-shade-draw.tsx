@@ -35,7 +35,7 @@ export function RectangleShadeDraw({graph,style,snapStep,onCreate,onError}:Props
   const current=gesture.current;if(!current||current.pointer!==event.pointerId)return;
   const end=position(event)??current.end;
   cancel();if(svg.current?.hasPointerCapture(event.pointerId))svg.current.releasePointerCapture(event.pointerId);
-  try{onCreate(createRectangleShading(graph,current.start,end));}
+  try{onCreate(createRectangleShading(graph,current.start,end,'left'));}
   catch(error){onError(error instanceof Error?error.message:'대각선으로 드래그해 사각형의 두 모서리를 지정해 주세요.');}
  }
  const x=region?layout.X(Math.min(region.start.x,region.end.x)):0,y=region?layout.Y(Math.max(region.start.y,region.end.y)):0;

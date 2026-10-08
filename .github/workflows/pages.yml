@@ -27,6 +27,7 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run test:byok
       - run: npm run test:graph-edit
+      - run: npm run test:dual-axis
       - run: npm run test:normal-model
       - run: npm run test:exam-library
       - run: npm run build:pages

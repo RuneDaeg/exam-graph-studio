@@ -3,8 +3,9 @@ import { physicsTemplates } from './exam-physics';
 import { chemistryTemplates } from './exam-chemistry';
 import { biologyTemplates } from './exam-biology';
 import { earthTemplates } from './exam-earth';
+import { integratedTemplates } from './exam-integrated';
 
-export const scienceCourses = ['물리학Ⅰ', '물리학Ⅱ', '화학Ⅰ', '화학Ⅱ', '생명과학Ⅰ', '생명과학Ⅱ', '지구과학Ⅰ', '지구과학Ⅱ'] as const;
+export const scienceCourses = ['통합과학', '물리학Ⅰ', '물리학Ⅱ', '화학Ⅰ', '화학Ⅱ', '생명과학Ⅰ', '생명과학Ⅱ', '지구과학Ⅰ', '지구과학Ⅱ'] as const;
 export type ScienceCourse = typeof scienceCourses[number];
 export type ExamTemplate = {
   id: string;
@@ -14,10 +15,12 @@ export type ExamTemplate = {
   tags: string[];
   graph: Graph;
   source: {
-    agency: '한국교육과정평가원';
+    agency: string;
     academicYear: number;
     conductedOn: string;
-    exam: '6월 모의평가' | '9월 모의평가';
+    exam: string;
+    grade?: '고1';
+    resourceType?: 'pdf' | 'zip';
     question: number;
     pdfPage: number;
     pdfUrl: string;
@@ -27,12 +30,12 @@ export type ExamTemplate = {
 };
 
 export const examTemplates: ExamTemplate[] = [
-  ...physicsTemplates, ...chemistryTemplates, ...biologyTemplates, ...earthTemplates,
+  ...physicsTemplates, ...chemistryTemplates, ...biologyTemplates, ...earthTemplates, ...integratedTemplates,
 ];
 
 export function sourceTitle(template: ExamTemplate) {
-  const { academicYear, exam, question } = template.source;
-  return `${academicYear}학년도 ${exam} · ${question}번`;
+  const { academicYear, exam, grade, question } = template.source;
+  return `${academicYear}학년도 ${grade ? grade + ' ' : ''}${exam} · ${question}번`;
 }
 
 export function filterExamTemplates(course: string, query: string) {

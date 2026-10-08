@@ -35,18 +35,18 @@ export function GraphLibrary({ onSelect, onClose, onReturnFocus }: { onSelect: (
       <DialogHeader>
         <span className="eyebrow">EXAM GRAPH LIBRARY</span>
         <DialogTitle className="library-title"><BookOpen size={21} />기출에서 찾은 그래프 유형 <span>{examTemplates.length}</span></DialogTitle>
-        <DialogDescription>2022–2026년 시행 6·9월 모의평가 · 과학탐구Ⅰ·Ⅱ<br />기출 그래프의 개념을 편집용 예시로 재구성했습니다.</DialogDescription>
+        <DialogDescription>과학탐구Ⅰ·Ⅱ 모의평가와 고1 통합과학 학력평가에서 선별한 대표 유형입니다.<br />기출 그래프의 개념을 편집용 예시로 재구성했으며, 전체 그래프 목록은 아닙니다.</DialogDescription>
       </DialogHeader>
       <div className="library-filters">
         <label className="library-search"><Search size={17} /><input aria-label="기출 유형 검색" placeholder="유형, 개념, 연도 검색" value={query} onChange={event => setQuery(event.target.value)} /></label>
         <label className="library-course"><span className="sr-only">과목</span><select aria-label="기출 유형 과목" value={course} onChange={event => setCourse(event.target.value)}><option>전체</option>{scienceCourses.map(item => <option key={item}>{item}</option>)}</select></label>
       </div>
-      <div className="library-count" role="status">{results.length}개 유형 <span>원본 PDF 80개 텍스트 탐색 · 선정 문항 그림 대조</span></div>
+      <div className="library-count" role="status">{results.length}개 대표 유형 <span>원문 텍스트 탐색 · 선정 문항 그림 대조 · 출처 수록</span></div>
       <div className="library-body">
         <div className="library-results" aria-label="기출 그래프 유형 목록">
           {results.map(template => <button key={template.id} className={'library-card' + (selected?.id === template.id ? ' selected' : '')} aria-pressed={selected?.id === template.id} onClick={() => setSelectedId(template.id)}>
             <TemplatePreview template={template} small />
-            <div className="library-card-copy"><span>{template.course}</span><strong>{template.name}</strong><small>{template.source.academicYear}학년도 · {template.source.exam.slice(0, 2)} · {template.source.question}번</small></div>
+            <div className="library-card-copy"><span>{template.course}</span><strong>{template.name}</strong><small>{template.source.academicYear}학년도 · {template.source.exam.split(' ')[0]} · {template.source.question}번</small></div>
           </button>)}
           {!results.length && <div className="library-empty"><b>일치하는 유형이 없습니다.</b><p>다른 검색어를 입력하거나 과목을 바꿔 보세요.</p><button className="button" onClick={() => { setQuery(''); setCourse('전체'); }}>전체 유형 보기</button></div>}
         </div>
@@ -55,7 +55,7 @@ export function GraphLibrary({ onSelect, onClose, onReturnFocus }: { onSelect: (
             <div className="library-detail-heading"><span className="badge">{selected.course}</span><h3>{selected.name}</h3><p>{selected.description}</p></div>
             <TemplatePreview template={selected} />
             <div className="library-tags">{selected.tags.map(tag => <span key={tag}>{tag}</span>)}</div>
-            <div className="library-source"><b>참고 문항</b><a href={selected.source.landingUrl} target="_blank" rel="noopener noreferrer">{sourceTitle(selected)}<ArrowUpRight size={14} /></a><span>{selected.source.agency} · {selected.source.conductedOn} 시행 · 문제지 {selected.source.pdfPage}쪽</span><a className="library-zip" href={selected.source.pdfUrl} target="_blank" rel="noopener noreferrer">EBSi 과탐 원본 묶음 (ZIP)</a></div>
+            <div className="library-source"><b>참고 문항</b><a href={selected.source.resourceType === 'pdf' ? `${selected.source.pdfUrl}#page=${selected.source.pdfPage}` : selected.source.landingUrl} target="_blank" rel="noopener noreferrer">{sourceTitle(selected)}<ArrowUpRight size={14} /></a><span>{selected.source.agency} · {selected.source.conductedOn} 시행 · 문제지 {selected.source.pdfPage}쪽</span><a className="library-zip" href={selected.source.resourceType === 'pdf' ? selected.source.landingUrl : selected.source.pdfUrl} target="_blank" rel="noopener noreferrer">{selected.source.resourceType === 'pdf' ? 'EBSi 자료실 · 과거 문제지 다운로드' : 'EBSi 원본 문제지 묶음 (ZIP)'}</a></div>
             <div className="library-adaptation"><b>재구성한 부분</b><p>{selected.adaptation.note}</p></div>
           </div>
           <div className="library-use"><span>AI · API 키 없이 바로 편집</span><button className="button primary full" onClick={() => { onSelect(structuredClone(selected.graph)); onClose(); }}>이 그래프로 시작</button></div>

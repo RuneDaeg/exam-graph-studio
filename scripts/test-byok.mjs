@@ -32,6 +32,16 @@ try{
   assert.equal(body.store,false);
   assert.equal(body.text.format.strict,true);
   const schema=body.text.format.schema;
+  assert.ok(schema.required.includes('rightYAxis'));
+  const [rightAxis,noRightAxis]=schema.properties.rightYAxis.anyOf;
+  assert.deepEqual(noRightAxis,{type:'null'});
+  assert.deepEqual(rightAxis.required,['label','min','max','ticks']);
+  assert.equal(rightAxis.additionalProperties,false);
+  for(const element of ['curves','guides','labels','shadings']){
+   assert.ok(schema.properties[element].items.required.includes('yAxis'));
+   assert.deepEqual(schema.properties[element].items.properties.yAxis.enum,['left','right']);
+  }
+  assert.ok(body.instructions.includes('do not manually normalize them into left-axis coordinates'));
   const curve=schema.properties.curves.items;
   assert.equal(curve.additionalProperties,false);
   assert.deepEqual(curve.required,Object.keys(curve.properties));
@@ -96,6 +106,30 @@ try{
   return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(legacyFixture)}]}]});
  };
  assert.deepEqual(await generateOpenAIGraph({prompt:'그래프',current:legacyFixture},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),legacyFixture);
+ // Separate y units survive an AI response and a subsequent refinement.
+ const dualFixture={...legacyFixture,equalAxes:false,rightYAxis:{label:'상대 습도 (%)',min:20,max:100,ticks:[{value:40,label:'40'},{value:80,label:'80'}]},
+  curves:[legacyFixture.curves[0],{...legacyFixture.curves[0],name:'상대 습도',yAxis:'right',points:[{x:0,y:40},{x:2,y:80},{x:4,y:60}]}],
+  guides:[{x1:2,y1:80,x2:legacyFixture.xMax,y2:80,yAxis:'right'}],labels:[{x:2,y:80,text:'H',dx:0,dy:-20,yAxis:'right'}],
+  shadings:[{curve:0,otherCurve:0,baseline:0,mode:'rectangle',xStart:1,xEnd:3,yStart:40,yEnd:60,yAxis:'right',pattern:'hatch',opacity:.15}]};
+ globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(dualFixture)}]}]});
+ const dualResult=await generateOpenAIGraph({prompt:'기온과 상대 습도를 왼쪽 오른쪽 축으로 그려 줘'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.deepEqual(dualResult,dualFixture);
+ globalThis.fetch=async(_url,options)=>{
+  const body=JSON.parse(options.body);
+  const current=JSON.parse(body.input[0].content[1].text.replace(/^Current graph data: /,''));
+  assert.deepEqual(current,dualFixture);
+  return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(current)}]}]});
+ };
+ assert.deepEqual(await generateOpenAIGraph({prompt:'두 축의 범위와 곡선을 유지해 줘',current:dualFixture},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),dualFixture);
+ for(const invalid of [
+  {...dualFixture,rightYAxis:null},
+  {...dualFixture,rightYAxis:{...dualFixture.rightYAxis,min:100}},
+  {...dualFixture,equalAxes:true},
+  {...dualFixture,shadings:[{...dualFixture.shadings[0],mode:'between',curve:0,otherCurve:1}]},
+ ]){
+  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(invalid)}]}]});
+  await assert.rejects(()=>generateOpenAIGraph({prompt:'이중 축 그래프'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
+ }
  const gamma={kind:'gamma',origin:1,peak:3,height:2,power:4,baseline:.5,end:9};
  const gammaCurve={...fixture.curves[0],distribution:gamma,smooth:false,dots:false,arrows:false,points:[{x:1,y:.5},{x:3,y:2.5},{x:9,y:.5}]};
  const gammaFixture={...legacyFixture,xMax:10,yMax:3,curves:[gammaCurve]};
@@ -234,5 +268,5 @@ try{
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({...fixture,curves:[{...fixture.curves[0],lineStyle:'unsupported'}]})}]}]});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
- console.log('PASS: BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, circle/ellipse metadata and canonical closed samples, equal-axis refinement, conic bounds and family exclusion, gamma/normal metadata and canonical samples, Gaussian shading and peak-guide refinement, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
+ console.log('PASS: independent dual-axis response/refinement, missing-axis/range/scaling/shading validation, BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, circle/ellipse metadata and canonical closed samples, equal-axis refinement, conic bounds and family exclusion, gamma/normal metadata and canonical samples, Gaussian shading and peak-guide refinement, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
 }finally{globalThis.fetch=originalFetch;await rm(temp,{recursive:true,force:true});}
