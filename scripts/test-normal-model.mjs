@@ -1,15 +1,14 @@
+import {compileTestModules} from './test-module-loader.mjs';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
-import ts from 'typescript';
 
 const root=process.cwd();
 await mkdir(path.join(root,'outputs'),{recursive:true});
 const temp=await mkdtemp(path.join(root,'outputs','normal-model-test-'));
 try{
- const source=await readFile(path.join(root,'lib/graph.ts'),'utf8');
- await writeFile(path.join(temp,'graph.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
+ await compileTestModules(temp,['graph']);
  const {presets,graphSchema,distributionValue,withDistribution,freeDistribution,distributionPeakIndex,pointOnCurve,withConic,renderGraph}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const preset=presets.find(p=>p.id==='normal');
  assert.ok(preset,'normal distribution has a selectable preset');

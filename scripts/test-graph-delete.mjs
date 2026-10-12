@@ -1,17 +1,14 @@
+import {compileTestModules} from './test-module-loader.mjs';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
-import ts from 'typescript';
 
 const root=process.cwd();
 await mkdir(path.join(root,'outputs'),{recursive:true});
 const temp=await mkdtemp(path.join(root,'outputs','graph-delete-test-'));
 try{
- for(const name of ['graph','graph-edit']){
-  const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
-  await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
- }
+ await compileTestModules(temp,['graph','graph-edit']);
  const {graphSchema,renderGraph,withDistribution,withConic,distributionPeakIndex}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const {deleteGraphTarget}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  const curve=(points,options={})=>({name:'선',points:points.map(([x,y])=>({x,y})),dashed:false,smooth:false,arrows:false,dots:false,...options});

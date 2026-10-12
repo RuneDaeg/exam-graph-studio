@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { createAxisScale, type AxisOptions } from './axis-scale';
+import { scienceModelSchema } from './science-models';
 const num = z.number().finite().min(-1000000).max(1000000);
 const point = z.object({x:num,y:num});
 const tick = z.object({value:num,label:z.string().max(80)});
@@ -108,40 +110,86 @@ function sampleDistribution(model:Distribution):DistributionPoint[]{
  }
  return samples;
 }
+const scaleKind=z.enum(['linear','log']);
+const axisBreak=z.object({from:num,to:num});
+const xAxis=z.enum(['bottom','top']);
+export type XAxis=z.infer<typeof xAxis>;
+const secondaryAxis=z.object({label:z.string().max(80),min:num,max:num,ticks:z.array(tick).max(30),scale:scaleKind.optional(),reversed:z.boolean().optional(),break:axisBreak.optional()});
 const yAxis = z.enum(['left','right']);
 export type YAxis = z.infer<typeof yAxis>;
 const lineStyle = z.enum(['solid','dashed','dotted','dash-dot','dash-dot-dot']);
-const shading = z.object({yAxis:yAxis.optional(),curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed','rectangle']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,yStart:num.optional(),yEnd:num.optional(),pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)}).superRefine((shade,ctx)=>{
+const shading = z.object({xAxis:xAxis.optional(),yAxis:yAxis.optional(),curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed','rectangle']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,yStart:num.optional(),yEnd:num.optional(),pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)}).superRefine((shade,ctx)=>{
  if(shade.mode!=='rectangle')return;
  if(shade.xStart>=shade.xEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['xEnd'],message:'사각형의 가로 끝은 시작보다 커야 합니다.'});
  if(shade.yStart===undefined||shade.yEnd===undefined||shade.yStart>=shade.yEnd)ctx.addIssue({code:z.ZodIssueCode.custom,path:['yEnd'],message:'사각형의 세로 시작과 끝을 입력하고 끝을 더 크게 설정해 주세요.'});
 });
-const curveSchema=z.object({yAxis:yAxis.optional(),name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean(),distribution:distributionSchema.nullable().optional(),conic:conicSchema.nullable().optional()})
+const curveSchema=z.object({xAxis:xAxis.optional(),yAxis:yAxis.optional(),plot:z.enum(['line','scatter','bar','histogram']).optional(),marker:z.enum(['circle','square','triangle','cross']).optional(),barWidth:num.positive().optional(),barBaseline:num.optional(),name:z.string().max(40),points:z.array(point).min(1).max(500),dashed:z.boolean(),lineStyle:lineStyle.optional(),smooth:z.boolean(),arrows:z.boolean(),dots:z.boolean(),distribution:distributionSchema.nullable().optional(),conic:conicSchema.nullable().optional()})
  .refine(curve=>!(curve.distribution&&curve.conic),{path:['conic'],message:'한 선에는 분포 공식과 원·타원 공식을 함께 적용할 수 없습니다.'})
+ .refine(curve=>(!curve.plot||curve.plot==='line')||!(curve.distribution||curve.conic),{path:['plot'],message:'산점도·막대·히스토그램에는 분포 또는 원·타원 공식을 함께 사용할 수 없습니다.'})
  .transform(curve=>curve.distribution?{...curve,points:sampleDistribution(curve.distribution),smooth:true}:curve.conic?{...curve,points:sampleConic(curve.conic),smooth:true}:curve);
 export const graphSchema = z.object({
+ scienceModel:scienceModelSchema.optional(),
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
  xMin:num,xMax:num,yMin:num,yMax:num,equalAxes:z.boolean().optional(),
+ xScale:scaleKind.optional(),yScale:scaleKind.optional(),xReversed:z.boolean().optional(),yReversed:z.boolean().optional(),xAxisPosition:z.enum(['bottom','top']).optional(),xBreak:axisBreak.optional(),yBreak:axisBreak.optional(),topXAxis:secondaryAxis.nullable().optional(),
  xTicks:z.array(tick).max(30),yTicks:z.array(tick).max(30),
- rightYAxis:z.object({label:z.string().max(80),min:num,max:num,ticks:z.array(tick).max(30)}).nullable().optional(),
+ rightYAxis:secondaryAxis.nullable().optional(),
  curves:z.array(curveSchema).max(12),
  shadings:z.array(shading).max(20).optional(),
- guides:z.array(z.object({yAxis:yAxis.optional(),x1:num,y1:num,x2:num,y2:num})).max(80),
- labels:z.array(z.object({yAxis:yAxis.optional(),x:num,y:num,text:z.string().max(120),dx:num,dy:num})).max(40),
+ guides:z.array(z.object({xAxis:xAxis.optional(),yAxis:yAxis.optional(),x1:num,y1:num,x2:num,y2:num})).max(80),
+ labels:z.array(z.object({xAxis:xAxis.optional(),yAxis:yAxis.optional(),x:num,y:num,text:z.string().max(120),dx:num,dy:num})).max(40),
  note:z.string().max(1000)
 }).superRefine((g,ctx)=>{
  if(!(g.xMax>g.xMin&&g.yMax>g.yMin))ctx.addIssue({code:z.ZodIssueCode.custom,message:'축의 최댓값은 최솟값보다 커야 합니다.'});
+ if(g.topXAxis&&g.xAxisPosition==='top')ctx.addIssue({code:z.ZodIssueCode.custom,path:['xAxisPosition'],message:'상단 보조축을 사용할 때 기본 가로축은 아래에 배치해 주세요.'});
  if(g.rightYAxis&&g.rightYAxis.max<=g.rightYAxis.min)ctx.addIssue({code:z.ZodIssueCode.custom,path:['rightYAxis','max'],message:'오른쪽 축의 최댓값은 최솟값보다 커야 합니다.'});
+ if(g.equalAxes&&(g.topXAxis||g.xScale==='log'||g.yScale==='log'||g.xBreak||g.yBreak))ctx.addIssue({code:z.ZodIssueCode.custom,path:['equalAxes'],message:'보조축·로그축·생략축에서는 같은 축척을 해제해 주세요.'});
  if(g.rightYAxis&&g.equalAxes)ctx.addIssue({code:z.ZodIssueCode.custom,path:['equalAxes'],message:'오른쪽 세로축을 사용할 때는 가로·세로 같은 축척을 해제해 주세요.'});
  for(const key of ['curves','guides','labels','shadings'] as const)for(const [i,value] of (g[key]??[]).entries()){
+  if(value.xAxis==='top'&&!g.topXAxis)ctx.addIssue({code:z.ZodIssueCode.custom,path:[key,i,'xAxis'],message:'상단 가로축을 먼저 켜 주세요.'});
   if(value.yAxis==='right'&&!g.rightYAxis)ctx.addIssue({code:z.ZodIssueCode.custom,path:[key,i,'yAxis'],message:'오른쪽 세로축을 먼저 켜 주세요.'});
  }
+ const axisIssue=(axis:AxisOptions,ticks:{value:number}[],path:(string|number)[])=>{
+  if(!(axis.max>axis.min))ctx.addIssue({code:z.ZodIssueCode.custom,path,message:'축의 최댓값은 최솟값보다 커야 합니다.'});
+  if(axis.scale==='log'&&(axis.min<=0||axis.max<=0||Math.log(axis.max)<=Math.log(axis.min)||ticks.some(t=>t.value<=0)))ctx.addIssue({code:z.ZodIssueCode.custom,path,message:'로그축의 범위와 눈금은 0보다 커야 합니다.'});
+  if(axis.break&&!(axis.min<axis.break.from&&axis.break.from<axis.break.to&&axis.break.to<axis.max))ctx.addIssue({code:z.ZodIssueCode.custom,path,message:'생략 구간은 축 범위 안에 있고 시작 < 끝이어야 합니다.'});
+ };
+ axisIssue({min:g.xMin,max:g.xMax,scale:g.xScale,break:g.xBreak},g.xTicks,['xMin']);
+ axisIssue({min:g.yMin,max:g.yMax,scale:g.yScale,break:g.yBreak},g.yTicks,['yMin']);
+ if(g.topXAxis)axisIssue(g.topXAxis,g.topXAxis.ticks,['topXAxis']);
+ if(g.rightYAxis)axisIssue(g.rightYAxis,g.rightYAxis.ticks,['rightYAxis']);
+ const logX=(axis?:XAxis)=>axis==='top'?g.topXAxis?.scale==='log':g.xScale==='log';
+ const logY=(axis?:YAxis)=>axis==='right'?g.rightYAxis?.scale==='log':g.yScale==='log';
+ const check=(x:number,y:number,axis:{xAxis?:XAxis;yAxis?:YAxis},path:(string|number)[])=>{
+  if(logX(axis.xAxis)&&x<=0||logY(axis.yAxis)&&y<=0)ctx.addIssue({code:z.ZodIssueCode.custom,path,message:'로그축에 연결된 좌표는 0보다 커야 합니다.'});
+ };
+ g.curves.forEach((c,i)=>{
+  c.points.forEach((p,j)=>check(p.x,p.y,c,['curves',i,'points',j]));
+  if(c.conic)check(c.conic.cx-c.conic.rx,c.conic.cy-c.conic.ry,c,['curves',i,'conic']);
+  if((c.plot==='bar'||c.plot==='histogram')&&c.barBaseline!==undefined&&logY(c.yAxis)&&c.barBaseline<=0)ctx.addIssue({code:z.ZodIssueCode.custom,path:['curves',i,'barBaseline'],message:'로그축 막대의 기준선은 0보다 커야 합니다.'});
+ });
+ g.guides.forEach((p,i)=>{check(p.x1,p.y1,p,['guides',i]);check(p.x2,p.y2,p,['guides',i]);});
+ g.labels.forEach((p,i)=>check(p.x,p.y,p,['labels',i]));
  for(const [i,shade] of (g.shadings??[]).entries()){
+  const target=shade.mode==='rectangle'?shade:g.curves[shade.curve]??shade;
+  if(shade.mode==='rectangle'){check(shade.xStart,shade.yStart!,target,['shadings',i]);check(shade.xEnd,shade.yEnd!,target,['shadings',i]);}
+  if(shade.mode==='baseline'){check(shade.xStart,shade.baseline,target,['shadings',i]);check(shade.xEnd,shade.baseline,target,['shadings',i]);}
+  if(shade.mode!=='rectangle'&&shade.xAxis!==undefined&&shade.xAxis!==(g.curves[shade.curve]?.xAxis??'bottom'))ctx.addIssue({code:z.ZodIssueCode.custom,path:['shadings',i,'xAxis'],message:'곡선 음영은 선택한 선의 가로축을 따릅니다.'});
+  if(shade.mode==='between'&&g.curves[shade.curve]&&g.curves[shade.otherCurve!]&&(g.curves[shade.curve].xAxis??'bottom')!==(g.curves[shade.otherCurve!].xAxis??'bottom'))ctx.addIssue({code:z.ZodIssueCode.custom,path:['shadings',i,'otherCurve'],message:'두 선 사이 음영은 같은 가로축을 사용해야 합니다.'});
   if(shade.mode!=='rectangle'&&shade.yAxis!==undefined&&shade.yAxis!==(g.curves[shade.curve]?.yAxis??'left'))ctx.addIssue({code:z.ZodIssueCode.custom,path:['shadings',i,'yAxis'],message:'곡선 음영은 선택한 선의 세로축을 따릅니다.'});
   if(shade.mode==='between'&&g.curves[shade.curve]&&g.curves[shade.otherCurve!]&&(g.curves[shade.curve].yAxis??'left')!==(g.curves[shade.otherCurve!].yAxis??'left'))ctx.addIssue({code:z.ZodIssueCode.custom,path:['shadings',i,'otherCurve'],message:'두 선 사이 음영은 같은 세로축을 사용하는 선끼리 설정해 주세요.'});
  }
 });
 export type Graph = z.infer<typeof graphSchema>;
+export function xAxisRange(graph:Graph,axis:XAxis='bottom'):{min:number;max:number}{
+ if(axis==='top'){if(!graph.topXAxis)throw Error('상단 가로축을 먼저 켜 주세요.');return {min:graph.topXAxis.min,max:graph.topXAxis.max};}
+ return {min:graph.xMin,max:graph.xMax};
+}
+export function axisOptions(graph:Graph,axis:XAxis|YAxis):AxisOptions{
+ if(axis==='top'){if(!graph.topXAxis)throw Error('상단 가로축을 먼저 켜 주세요.');return graph.topXAxis;}
+ if(axis==='right'){if(!graph.rightYAxis)throw Error('오른쪽 세로축을 먼저 켜 주세요.');return graph.rightYAxis;}
+ return axis==='bottom'?{min:graph.xMin,max:graph.xMax,scale:graph.xScale,reversed:graph.xReversed,break:graph.xBreak}:{min:graph.yMin,max:graph.yMax,scale:graph.yScale,reversed:graph.yReversed,break:graph.yBreak};
+}
 export function yAxisRange(graph:Graph,axis:YAxis='left'):{min:number;max:number}{
  if(axis==='right'){
   if(!graph.rightYAxis)throw Error('오른쪽 세로축을 먼저 켜 주세요.');
@@ -325,18 +373,20 @@ function orderedFunction(curve:Curve){
  return curve.points.length>=2&&curve.points.every((p,i)=>Number.isFinite(p.x)&&Number.isFinite(p.y)&&(!i||p.x>curve.points[i-1].x));
 }
 function shadingRange(graph:Graph,shade:Shading):[number,number]{
- const curve=graph.curves[shade.curve],other=shade.mode==='between'?graph.curves[shade.otherCurve!]:undefined;
- return [Math.max(graph.xMin,shade.xStart,curve.points[0].x,other?.points[0].x??-Infinity),Math.min(graph.xMax,shade.xEnd,curve.points.at(-1)!.x,other?.points.at(-1)?.x??Infinity)];
+ const curve=graph.curves[shade.curve],range=xAxisRange(graph,curve.xAxis),other=shade.mode==='between'?graph.curves[shade.otherCurve!]:undefined;
+ return [Math.max(range.min,shade.xStart,curve.points[0].x,other?.points[0].x??-Infinity),Math.min(range.max,shade.xEnd,curve.points.at(-1)!.x,other?.points.at(-1)?.x??Infinity)];
 }
 export function shadingIssue(graph:Graph,shade:Shading):string{
  if(!shading.safeParse(shade).success)return '음영의 좌표, 진하기, 선 선택 값을 확인해 주세요.';
+ if(shade.xAxis==='top'&&!graph.topXAxis)return '상단 가로축을 먼저 켜 주세요.';
  if(shade.yAxis==='right'&&!graph.rightYAxis)return '오른쪽 세로축을 먼저 켜 주세요.';
  if(shade.mode==='rectangle'){
-  const range=yAxisRange(graph,shade.yAxis);
-  return Math.max(graph.xMin,shade.xStart)<Math.min(graph.xMax,shade.xEnd)&&Math.max(range.min,shade.yStart!)<Math.min(range.max,shade.yEnd!)?'':'사각형 음영이 현재 축 범위와 겹쳐야 합니다.';
+  const range=yAxisRange(graph,shade.yAxis),xr=xAxisRange(graph,shade.xAxis);
+  return Math.max(xr.min,shade.xStart)<Math.min(xr.max,shade.xEnd)&&Math.max(range.min,shade.yStart!)<Math.min(range.max,shade.yEnd!)?'':'사각형 음영이 현재 축 범위와 겹쳐야 합니다.';
  }
  const curve=graph.curves[shade.curve];
  if(!curve)return '음영을 적용할 선을 선택해 주세요.';
+ if(shade.xAxis!==undefined&&shade.xAxis!==(curve.xAxis??'bottom'))return '곡선 음영은 선택한 선의 가로축을 따릅니다.';
  if(shade.yAxis!==undefined&&shade.yAxis!==(curve.yAxis??'left'))return '곡선 음영은 선택한 선의 세로축을 따릅니다.';
  if(shade.mode==='closed'){
   const first=curve.points[0],last=curve.points.at(-1);
@@ -347,6 +397,7 @@ export function shadingIssue(graph:Graph,shade:Shading):string{
  if(shade.mode==='between'){
   const other=graph.curves[shade.otherCurve!];
   if(!other||shade.otherCurve===shade.curve)return '사이 영역을 만들 다른 선을 선택해 주세요.';
+  if((curve.xAxis??'bottom')!==(other.xAxis??'bottom'))return '두 선 사이 음영은 같은 가로축을 사용해야 합니다.';
   if((curve.yAxis??'left')!==(other.yAxis??'left'))return '두 선 사이 음영은 같은 세로축을 사용하는 선끼리 설정해 주세요.';
   if(!orderedFunction(other))return '두 선 모두 점이 2개 이상이고 왼쪽부터 순서대로 이어져야 합니다.';
  }
@@ -383,11 +434,9 @@ const esc=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;
 function rich(s:string){return s.split(/(_\{[^}]+\}|\^\{[^}]+\}|_[A-Za-z0-9]+|\^[A-Za-z0-9]+)/).map(t=>/^[_^]/.test(t)?`<tspan baseline-shift="${t[0]==='_'?'sub':'super'}" font-size="70%">${esc(t.slice(1).replace(/[{}]/g,''))}</tspan>`:t.split(/([A-Za-z]+)/).map(part=>/^[A-Za-z]+$/.test(part)?/^(m|s|kg|mol|mL|Pa|Hz|cm|HCl|NaOH)$/.test(part)?part:part.replace(/[A-Za-z]/g,'<tspan font-style="italic">$&</tspan>'):esc(part)).join('')).join('');}
 export function graphLayout(g:Graph,s:Style=defaultStyle){
  const w=s.width,h=s.height;
+ let fittedWidth:number|undefined,fittedHeight:number|undefined,equalScale:number|undefined;
  let L=Math.min(w*.34,Math.max(Math.min(112,w*.2),Math.max(...g.yLabel.split('\n').map(t=>t.replace(/\\[a-zA-Z]+/g,'').replace(/[_^{}]/g,'').length))*s.fontSize*.8+22)),R=w-Math.min(95,w*.14),T=Math.min(66,h*.14),B=h-Math.min(95,h*.2);
- let equalScale:number|undefined;
  if(g.rightYAxis){
-  // Reserve a full row for every extra title line so the unit cannot collide
-  // with a tick at the top of either independently scaled axis.
   const titleLines=Math.max(g.yLabel.split('\n').length,g.rightYAxis.label.split('\n').length);
   T+=Math.min(Math.max(0,h*.4-T),(titleLines-1)*s.fontSize*1.2);
   const xTitleRows=g.xLabel.split('\n').length;
@@ -395,89 +444,175 @@ export function graphLayout(g:Graph,s:Style=defaultStyle){
   const longest=Math.max(...g.rightYAxis.label.split('\n').map(t=>t.replace(/\\[a-zA-Z]+/g,'').replace(/[_^{}]/g,'').length),...g.rightYAxis.ticks.map(t=>t.label.length));
   R=w-Math.min(w*.3,Math.max(112,longest*s.fontSize*.8+28));
  }
- if(!g.rightYAxis&&(g.equalAxes??g.curves.some(curve=>!!curve.conic))){
-  // Fit the declared domain into the available rectangle at one shared unit
-  // scale. Updating the bounds also keeps clipping, axes and inverse dragging
-  // aligned with the centered plot, without modifying the saved axis limits.
-  const scale=Math.min((R-L)/(g.xMax-g.xMin),(B-T)/(g.yMax-g.yMin));
-  equalScale=scale;
-  const width=(g.xMax-g.xMin)*scale,height=(g.yMax-g.yMin)*scale;
-  const centerX=(L+R)/2,centerY=(T+B)/2;
-  L=centerX-width/2;R=centerX+width/2;T=centerY-height/2;B=centerY+height/2;
+ if(g.topXAxis||g.xAxisPosition==='top')T=Math.max(T,Math.min(h*.3,58+s.fontSize*2.4));
+ if(!g.rightYAxis&&!g.topXAxis&&g.xScale!=='log'&&g.yScale!=='log'&&!g.xBreak&&!g.yBreak&&(g.equalAxes??g.curves.some(curve=>!!curve.conic))){
+  const spanX=g.xMax-g.xMin,spanY=g.yMax-g.yMin;
+  // Ratios, instead of world-unit scale multiplication, remain finite for
+  // subnormal units and preserve exact circles at ordinary scales.
+  const ratio=spanX/spanY,available=(R-L)/(B-T);
+  let width=R-L,height=B-T;
+  if(ratio<available)width=height*ratio;else height=width/ratio;
+  if(width>0&&height>0&&Number.isFinite(width)&&Number.isFinite(height)){
+   fittedWidth=width;fittedHeight=height;equalScale=Math.min((R-L)/spanX,(B-T)/spanY);
+   const centerX=(L+R)/2,centerY=(T+B)/2;
+   L=centerX-width/2;R=centerX+width/2;T=centerY-height/2;B=centerY+height/2;
+  }
  }
- const dx=equalScale??(R-L)/(g.xMax-g.xMin),dy=equalScale??(B-T)/(g.yMax-g.yMin);
- const X=(x:number)=>L+(x-g.xMin)*dx,Y=(y:number)=>B-(y-g.yMin)*dy;
- const zx=Math.max(g.xMin,Math.min(0,g.xMax)),zy=Math.max(g.yMin,Math.min(0,g.yMax)),ox=g.rightYAxis?L:X(zx),oy=Y(zy);
- const dyFor=(axis:YAxis='left')=>axis==='left'?dy:(B-T)/(yAxisRange(g,axis).max-yAxisRange(g,axis).min);
- const YFor=(y:number,axis:YAxis='left')=>axis==='left'?Y(y):B-(y-yAxisRange(g,axis).min)*dyFor(axis);
- const worldFor=(x:number,y:number,axis:YAxis='left')=>({x:g.xMin+(x-L)/dx,y:yAxisRange(g,axis).min+(B-y)/dyFor(axis)});
- return {w,h,L,R,T,B,dx,dy,X,Y,YFor,dyFor,zx,zy,ox,oy,world:(x:number,y:number)=>worldFor(x,y),worldFor};
+ const xMapping=createAxisScale(axisOptions(g,'bottom'),L,R,fittedWidth),yMapping=createAxisScale(axisOptions(g,'left'),B,T,fittedHeight===undefined?undefined:-fittedHeight);
+ const topMapping=g.topXAxis?createAxisScale(g.topXAxis,L,R):xMapping,rightMapping=g.rightYAxis?createAxisScale(g.rightYAxis,B,T):yMapping;
+ const xMappingFor=(axis:XAxis='bottom')=>axis==='top'?topMapping:xMapping,yMappingFor=(axis:YAxis='left')=>axis==='right'?rightMapping:yMapping;
+ const X=xMapping.forward,Y=yMapping.forward,XFor=(value:number,axis:XAxis='bottom')=>xMappingFor(axis).forward(value),YFor=(value:number,axis:YAxis='left')=>yMappingFor(axis).forward(value);
+ const dx=Number.isFinite(equalScale)?equalScale!*(g.xReversed?-1:1):xMapping.nominal,dy=Number.isFinite(equalScale)?equalScale!*(g.yReversed?-1:1):-yMapping.nominal,xScaleFor=(axis:XAxis='bottom')=>xMappingFor(axis).nominal,dyFor=(axis:YAxis='left')=>-yMappingFor(axis).nominal;
+ const zx=g.xScale==='log'?g.xMin:Math.max(g.xMin,Math.min(0,g.xMax)),zy=g.yScale==='log'?g.yMin:Math.max(g.yMin,Math.min(0,g.yMax));
+ const ox=g.rightYAxis||g.xScale==='log'||g.xReversed?L:X(zx),oy=g.xAxisPosition==='top'?T:g.yScale==='log'||g.yReversed?B:Y(zy);
+ const worldFor=(x:number,y:number,yAxis:YAxis='left',xAxis:XAxis='bottom')=>({x:xMappingFor(xAxis).inverse(x),y:yMappingFor(yAxis).inverse(y)});
+ return {w,h,L,R,T,B,dx,dy,X,Y,XFor,YFor,xScaleFor,dyFor,xMappingFor,yMappingFor,zx,zy,ox,oy,world:(x:number,y:number)=>worldFor(x,y),worldFor};
+}
+function mappedSegmentPoints(segment:Segment,X:(x:number)=>number,Y:(y:number)=>number):Point[]{
+ const map=(t:number)=>{const p=segmentPoint(segment,t);return {x:X(p.x),y:Y(p.y)};};
+ const points=[map(0)];
+ const split=(a:number,b:number,p:Point,q:Point,depth:number)=>{
+  const mid=(a+b)/2,m=map(mid),quarter=map((3*a+b)/4),three=map((a+3*b)/4);
+  const error=(r:Point,t:number)=>Math.hypot(r.x-(p.x+(q.x-p.x)*t),r.y-(p.y+(q.y-p.y)*t));
+  if(depth<16&&Math.max(error(m,.5),error(quarter,.25),error(three,.75))>.15){split(a,mid,p,m,depth+1);split(mid,b,m,q,depth+1);}else points.push(q);
+ };
+ split(0,1,points[0],map(1),0);return points;
+}
+export function nearestMappedCurvePosition(curve:Curve,point:Point,X:(x:number)=>number,Y:(y:number)=>number):{segment:number;t:number;point:Point;distance:number}{
+ if(curve.points.length<2)throw Error('점을 추가하려면 선에 점이 두 개 이상 있어야 합니다.');
+ let best={segment:0,t:0,point:curve.points[0],distance:Infinity};
+ for(const [segmentIndex,segment] of curveSegments(curve).entries()){
+  const distance=(t:number)=>{const p=segmentPoint(segment,t);return Math.hypot(X(p.x)-point.x,Y(p.y)-point.y);};
+  // Bracket each local minimum before refinement; nonlinear projections can
+  // create more than one candidate minimum on an otherwise simple cubic.
+  const count=64,values=Array.from({length:count+1},(_,i)=>distance(i/count));
+  const consider=(t:number)=>{const d=distance(t);if(d<best.distance)best={segment:segmentIndex,t,point:segmentPoint(segment,t),distance:d};};
+  consider(0);consider(1);
+  // A minimum inside the first/last sample interval may have the endpoint
+  // as its nearest sampled value. Refine those one-sided brackets too; merely
+  // considering t=0/1 would snap valid near-endpoint insertions to the endpoint.
+  for(let i=0;i<=count;i++)if((i===0||values[i]<=values[i-1])&&(i===count||values[i]<=values[i+1])){
+   let lo=Math.max(0,i-1)/count,hi=Math.min(count,i+1)/count;
+   for(let pass=0;pass<48;pass++){const a=lo+(hi-lo)/3,b=hi-(hi-lo)/3;if(distance(a)<distance(b))hi=b;else lo=a;}
+   consider((lo+hi)/2);
+  }
+ }
+ return best;
 }
 export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
- const {w,h,L,R,T,B,X,Y,YFor,zx,zy,ox,oy}=graphLayout(g,s);
- const n=(x:number)=>Math.round(x*100)/100;
+ const layout=graphLayout(g,s),{w,h,L,R,T,B,X,Y,XFor,YFor,xMappingFor,yMappingFor,zx,zy,ox,oy}=layout;
+ const n=(x:number)=>Number.isFinite(x)?Math.round(x*100)/100:0;
  const text=(x:number,y:number,t:string,anchor='middle',size=s.fontSize,edit='')=>`<text ${edit?`data-edit="${edit}"`:''} data-label="${esc(t).replace(/\n/g,'&#10;')}" x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" font-size="${size}" fill="#151515">${t.split('\n').map((line,i)=>`<tspan x="${n(x)}" dy="${i?1.2:0}em">${rich(line)}</tspan>`).join('')}</text>`;
  const line=(x1:number,y1:number,x2:number,y2:number,extra='')=>`<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" ${extra}/>`;
  const a=s.arrows?`marker-end="url(#${id}-arrow)"`:'';
  const axisTitleY=(label:string)=>T-25-(g.rightYAxis?(label.split('\n').length-1)*s.fontSize*1.2:0);
  const geometries=g.curves.map(curveSegments);
  const pathData=(ci:number,reverse=false,start='M')=>{
-  const curve=g.curves[ci],segments=geometries[ci],Y=(value:number)=>YFor(value,curve.yAxis);
-  const first=reverse?curve.points.at(-1):curve.points[0];
-  if(!first)return '';
+  const curve=g.curves[ci],segments=geometries[ci],X=(value:number)=>XFor(value,curve.xAxis),Y=(value:number)=>YFor(value,curve.yAxis);
+  const first=reverse?curve.points.at(-1):curve.points[0];if(!first)return '';
   let d=`${start}${n(X(first.x))},${n(Y(first.y))}`;
+  const nonlinear=xMappingFor(curve.xAxis).nonlinear||yMappingFor(curve.yAxis).nonlinear;
   for(const segment of reverse?[...segments].reverse():segments){
-   const to=reverse?segment.from:segment.to,c1=reverse?segment.c2:segment.c1,c2=reverse?segment.c1:segment.c2;
-   d+=c1&&c2?` C${n(X(c1.x))},${n(Y(c1.y))} ${n(X(c2.x))},${n(Y(c2.y))} ${n(X(to.x))},${n(Y(to.y))}`:` L${n(X(to.x))},${n(Y(to.y))}`;
+   if(nonlinear){
+    const points=mappedSegmentPoints(segment,X,Y);if(reverse)points.reverse();
+    d+=points.slice(1).map(p=>` L${n(p.x)},${n(p.y)}`).join('');
+   }else{
+    const to=reverse?segment.from:segment.to,c1=reverse?segment.c2:segment.c1,c2=reverse?segment.c1:segment.c2;
+    d+=c1&&c2?` C${n(X(c1.x))},${n(Y(c1.y))} ${n(X(c2.x))},${n(Y(c2.y))} ${n(X(to.x))},${n(Y(to.y))}`:` L${n(X(to.x))},${n(Y(to.y))}`;
+   }
   }
   return d;
+ };
+ const clipName=(x:XAxis='bottom',y:YAxis='left')=>`${id}-clip-${x}-${y}`;
+ const clipRects=(x:XAxis='bottom',y:YAxis='left',from?:number,to?:number)=>{
+  const map=xMappingFor(x),low=from===undefined?L:Math.min(map.forward(from),map.forward(to!)),high=to===undefined?R:Math.max(map.forward(from!),map.forward(to));
+  return map.pixelIntervals.flatMap(([x1,x2])=>yMappingFor(y).pixelIntervals.map(([y1,y2])=>{
+   const left=Math.max(x1,low),right=Math.min(x2,high);
+   return right>left?`<rect x="${left}" y="${y1}" width="${right-left}" height="${y2-y1}"/>`:'';
+  })).join('');
  };
  let shadeDefs='',shadePaths='';
  for(const [index,shade] of (g.shadings??[]).entries()){
   if(shadingIssue(g,shade))continue;
-  const [start,end]=shade.mode==='closed'||shade.mode==='rectangle'?[g.xMin,g.xMax]:shadingRange(g,shade);
+  const target=shade.mode==='rectangle'?shade:g.curves[shade.curve],xa=target.xAxis,ya=target.yAxis;
+  const X=(value:number)=>XFor(value,xa),Y=(value:number)=>YFor(value,ya),range=xAxisRange(g,xa);
+  const [start,end]=shade.mode==='closed'||shade.mode==='rectangle'?[range.min,range.max]:shadingRange(g,shade);
   const clip=`${id}-shade-clip-${index}`,hatch=`${id}-shade-hatch-${index}`;
-  shadeDefs+=`<clipPath id="${clip}"><rect x="${X(start)}" y="${T}" width="${X(end)-X(start)}" height="${B-T}"/></clipPath>`;
+  shadeDefs+=`<clipPath id="${clip}">${clipRects(xa,ya,start,end)}</clipPath>`;
   if(shade.pattern==='hatch')shadeDefs+=`<pattern id="${hatch}" patternUnits="userSpaceOnUse" width="7" height="7"><path d="M-1 1 L1 -1 M0 7 L7 0 M6 8 L8 6" fill="none" stroke="#151515" stroke-width="1.2"/></pattern>`;
   let d:string;
-  if(shade.mode==='rectangle'){
-   const Y=(value:number)=>YFor(value,shade.yAxis);
-   d=`M${n(X(shade.xStart))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yEnd!))} L${n(X(shade.xStart))},${n(Y(shade.yEnd!))}`;
-  }else{
-   const curve=g.curves[shade.curve],first=curve.points[0],last=curve.points.at(-1)!,Y=(value:number)=>YFor(value,curve.yAxis);
+  if(shade.mode==='rectangle')d=`M${n(X(shade.xStart))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yStart!))} L${n(X(shade.xEnd))},${n(Y(shade.yEnd!))} L${n(X(shade.xStart))},${n(Y(shade.yEnd!))}`;
+  else{
+   const curve=g.curves[shade.curve],first=curve.points[0],last=curve.points.at(-1)!;
    d=pathData(shade.curve);
    if(shade.mode==='baseline')d+=` L${n(X(last.x))},${n(Y(shade.baseline))} L${n(X(first.x))},${n(Y(shade.baseline))}`;
    if(shade.mode==='between')d+=' '+pathData(shade.otherCurve!,true,'L');
   }
   shadePaths+=`<path data-shading="${index}" d="${d} Z" fill="${shade.pattern==='hatch'?`url(#${hatch})`:'#151515'}" fill-rule="evenodd" opacity="${shade.opacity}" clip-path="url(#${clip})"/>`;
  }
- let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" data-korean-font="${s.font}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker><clipPath id="${id}-clip"><rect x="${L-12}" y="${T-12}" width="${R-L+24}" height="${B-T+24}"/></clipPath>${shadeDefs}</defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${graphFontFamilies[s.font]}" font-style="normal">${shadePaths}`;
- if(s.guides)out+=`<g stroke="#666" stroke-width="${s.lineWidth*.6}" stroke-dasharray="5 4" clip-path="url(#${id}-clip)">${g.guides.map(p=>line(X(p.x1),YFor(p.y1,p.yAxis),X(p.x2),YFor(p.y2,p.yAxis))).join('')}</g>`;
- out+=`<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${line(L,oy,R+20,oy,a)}${line(ox,B,ox,T-22,a)}</g>`;
- out+=text(R+20,oy+(g.rightYAxis?31+1.5*s.fontSize:43),g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,axisTitleY(g.yLabel),g.yLabel,'end',s.fontSize,'axis:y')+(g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0?text(X(0)-15,oy+27,'0'):'');
- g.xTicks.forEach((t,i)=>{if(t.value<g.xMin||t.value>g.xMax||(g.rightYAxis?t.value===0&&g.yMin<=0&&g.yMax>=0:t.value===zx))return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),oy+31,t.label,'middle',s.fontSize,`tick:x:${i}`);});
- g.yTicks.forEach((t,i)=>{if(t.value<g.yMin||t.value>g.yMax||(g.rightYAxis?t.value===0&&g.xMin===0:t.value===zy))return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
+ let clips='';for(const xa of ['bottom',...(g.topXAxis?['top']:[])] as XAxis[])for(const ya of ['left',...(g.rightYAxis?['right']:[])] as YAxis[])clips+=`<clipPath id="${clipName(xa,ya)}">${clipRects(xa,ya)}</clipPath>`;
+ let out=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" data-korean-font="${s.font}" role="img" aria-label="${esc(g.title)}"><title>${esc(g.title)}</title><defs><marker id="${id}-arrow" viewBox="0 0 12 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L12 5 L0 10 L3 5Z" fill="#151515"/></marker>${clips}${shadeDefs}</defs>${s.transparent?'':`<rect width="${w}" height="${h}" fill="white"/>`}<g font-family="${graphFontFamilies[s.font]}" font-style="normal">${shadePaths}`;
+ if(s.guides)out+=`<g stroke="#666" stroke-width="${s.lineWidth*.6}" stroke-dasharray="5 4">${g.guides.map((p,index)=>{
+  const X=(v:number)=>XFor(v,p.xAxis),Y=(v:number)=>YFor(v,p.yAxis);
+  if(!xMappingFor(p.xAxis).nonlinear&&!yMappingFor(p.yAxis).nonlinear)return line(X(p.x1),Y(p.y1),X(p.x2),Y(p.y2),`data-guide="${index}" clip-path="url(#${clipName(p.xAxis,p.yAxis)})"`);
+  const d=mappedSegmentPoints({from:{x:p.x1,y:p.y1},to:{x:p.x2,y:p.y2}},X,Y).map((v,i)=>`${i?'L':'M'}${n(v.x)},${n(v.y)}`).join(' ');
+  return `<path data-guide="${index}" d="${d}" fill="none" clip-path="url(#${clipName(p.xAxis,p.yAxis)})"/>`;
+ }).join('')}</g>`;
+ const axisLine=(axis:XAxis|YAxis,position:number)=>{
+  const horizontal=axis==='bottom'||axis==='top',mapping=horizontal?xMappingFor(axis as XAxis):yMappingFor(axis as YAxis),opts=axisOptions(g,axis),pieces=mapping.pixelIntervals;
+  let markup='';
+  for(const [lo,hi] of pieces){
+   let from=horizontal?lo:hi,to=horizontal?hi:lo;
+   if(opts.reversed)[from,to]=[to,from];
+   const arrowEnd=Math.abs(to-mapping.forward(opts.max))<.001;
+   if(arrowEnd)to+=(horizontal?(opts.reversed?-20:20):(opts.reversed?22:-22));
+   markup+=horizontal?line(from,position,to,position,arrowEnd?a:''):line(position,from,position,to,arrowEnd?a:'');
+  }
+  if(mapping.gapPixels){const mid=(mapping.gapPixels[0]+mapping.gapPixels[1])/2;
+   markup+=horizontal?`<path data-axis-break="${axis}" d="M${n(mid-6)} ${n(position+5)} l4 -10 m4 10 l4 -10"/>`:`<path data-axis-break="${axis}" d="M${n(position-5)} ${n(mid-6)} l10 4 m-10 4 l10 4"/>`;
+  }
+  return `<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${markup}</g>`;
+ };
+ out+=axisLine('bottom',oy)+axisLine('left',ox);
+ const top=g.xAxisPosition==='top',xTickY=top?oy-14:oy+31;
+ out+=text(R+20,top?oy-46:oy+(g.rightYAxis?31+1.5*s.fontSize:43),g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,axisTitleY(g.yLabel),g.yLabel,'end',s.fontSize,'axis:y');
+ const showZero=g.xScale!=='log'&&g.yScale!=='log'&&!g.xReversed&&!g.yReversed&&!top&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0&&xMappingFor().visible(0)&&yMappingFor().visible(0);
+ if(showZero)out+=text(X(0)-15,oy+27,'0');
+ g.xTicks.forEach((t,i)=>{if(!xMappingFor().contains(t.value)||(showZero&&(g.rightYAxis?t.value===0&&g.yMin<=0&&g.yMax>=0:t.value===zx)))return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),xTickY,t.label,'middle',s.fontSize,`tick:x:${i}`);});
+ g.yTicks.forEach((t,i)=>{if(!yMappingFor().contains(t.value)||(showZero&&(g.rightYAxis?t.value===0&&g.xMin===0:t.value===zy)))return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
  if(g.rightYAxis){
-  const right=g.rightYAxis;
-  out+=`<g stroke="#151515" stroke-width="${s.lineWidth*.7}" fill="none">${line(R,B,R,T-22,a)}</g>`;
-  out+=text(R+17,axisTitleY(right.label),right.label,'start',s.fontSize,'axis:right');
-  right.ticks.forEach((tick,i)=>{if(tick.value<right.min||tick.value>right.max)return;const y=YFor(tick.value,'right');out+=line(R-4,y,R+4,y,`stroke="#151515" stroke-width="1"`)+text(R+32,y+s.fontSize*.33,tick.label,'start',s.fontSize,`tick:right:${i}`);});
+  const right=g.rightYAxis;out+=axisLine('right',R)+text(R+17,axisTitleY(right.label),right.label,'start',s.fontSize,'axis:right');
+  right.ticks.forEach((tick,i)=>{if(!yMappingFor('right').contains(tick.value))return;const y=YFor(tick.value,'right');out+=line(R-4,y,R+4,y,`stroke="#151515" stroke-width="1"`)+text(R+32,y+s.fontSize*.33,tick.label,'start',s.fontSize,`tick:right:${i}`);});
  }
+ if(g.topXAxis){
+  out+=axisLine('top',T)+text(R,T-47,g.topXAxis.label,'end',s.fontSize,'axis:top');
+  g.topXAxis.ticks.forEach((tick,i)=>{if(!xMappingFor('top').contains(tick.value))return;const x=XFor(tick.value,'top');out+=line(x,T-4,x,T+4,`stroke="#151515" stroke-width="1"`)+text(x,T-13,tick.label,'middle',s.fontSize,`tick:top:${i}`);});
+ }
+ const marker=(x:number,y:number,kind:Curve['marker'])=>{
+  const r=s.lineWidth*2,attrs=`data-marker="${kind??'circle'}" fill="#151515"`;
+  if(kind==='square')return `<rect ${attrs} x="${n(x-r)}" y="${n(y-r)}" width="${r*2}" height="${r*2}"/>`;
+  if(kind==='triangle')return `<path ${attrs} d="M${n(x)} ${n(y-r*1.3)} L${n(x+r*1.2)} ${n(y+r)} L${n(x-r*1.2)} ${n(y+r)} Z"/>`;
+  if(kind==='cross')return `<path ${attrs} d="M${n(x-r)} ${n(y-r)} L${n(x+r)} ${n(y+r)} M${n(x-r)} ${n(y+r)} L${n(x+r)} ${n(y-r)}" stroke="#151515" stroke-width="${s.lineWidth}"/>`;
+  return `<circle cx="${n(x)}" cy="${n(y)}" r="${r}" ${attrs}/>`;
+ };
  for(const [ci,c] of g.curves.entries()){
-  const Y=(value:number)=>YFor(value,c.yAxis);
+  const X=(value:number)=>XFor(value,c.xAxis),Y=(value:number)=>YFor(value,c.yAxis),xm=xMappingFor(c.xAxis),ym=yMappingFor(c.yAxis),plot=c.plot??'line';
   const visiblePoints=c.distribution?[c.points[distributionPeakIndex(c)]]:c.conic?conicHandleIndices(c).map(i=>c.points[i]):c.points;
-  const pts=visiblePoints.filter(Boolean).map(p=>[X(p.x),Y(p.y)]),d=pathData(ci),dashArray=lineDashArray(curveLineStyle(c),s.lineWidth);
+  const pts=visiblePoints.filter(p=>p&&xm.visible(p.x)&&ym.visible(p.y)).map(p=>[X(p.x),Y(p.y)]),d=pathData(ci),dashArray=lineDashArray(curveLineStyle(c),s.lineWidth);
+  out+=`<g clip-path="url(#${clipName(c.xAxis,c.yAxis)})">`;
+  if(plot==='line')out+=`<path data-edit="curve:${ci}" d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${dashArray?`stroke-dasharray="${dashArray}"`:''}/>`;
+  if(plot==='scatter'){const r=s.lineWidth*2;out+=`<path data-edit="curve:${ci}" d="${pts.map(([x,y])=>`M${n(x-r)} ${n(y)} a${r} ${r} 0 1 0 ${r*2} 0 a${r} ${r} 0 1 0 ${-r*2} 0`).join(' ')}" fill="transparent" stroke="none"/>`;}
+  if(plot==='scatter'||c.dots)out+=pts.map(([x,y])=>marker(x,y,c.marker)).join('');
+  if(plot==='bar'||plot==='histogram'){
+   const xs=[...new Set(c.points.map(p=>p.x))].sort((a,b)=>a-b),width=c.barWidth??(xs.length>1?Math.min(...xs.slice(1).map((x,i)=>x-xs[i])):(xAxisRange(g,c.xAxis).max-xAxisRange(g,c.xAxis).min)/10)*(plot==='bar'?.75:1);
+   const baseline=c.barBaseline??(axisOptions(g,c.yAxis??'left').scale==='log'?yAxisRange(g,c.yAxis).min:0);
+   for(const p of c.points){const left=p.x-width/2,x1=X(axisOptions(g,c.xAxis??'bottom').scale==='log'?Math.max(xAxisRange(g,c.xAxis).min,left):left),x2=X(p.x+width/2),y1=Y(baseline),y2=Y(p.y);out+=`<path data-edit="curve:${ci}" d="M${n(x1)} ${n(y1)} L${n(x2)} ${n(y1)} L${n(x2)} ${n(y2)} L${n(x1)} ${n(y2)} Z" fill="transparent" stroke="none"/><rect data-plot="${plot}" x="${n(Math.min(x1,x2))}" y="${n(Math.min(y1,y2))}" width="${n(Math.abs(x2-x1))}" height="${n(Math.abs(y2-y1))}" fill="#151515" fill-opacity="0.15" stroke="#151515" stroke-width="${s.lineWidth}" ${dashArray?`stroke-dasharray="${dashArray}"`:''}/>`;}
+  }
   const arrowGeometry=c.distribution?[geometries[ci][Math.min(geometries[ci].length-1,distributionPeakIndex(c)+Math.floor((c.points.length-distributionPeakIndex(c))/4))]].filter(Boolean):c.conic?[0,4,8,12].map(i=>geometries[ci][i]):geometries[ci];
-  const arrowSegments=c.arrows?arrowGeometry.map(segment=>{
-   const p=segmentPoint(segment,.48),q=segmentPoint(segment,.56);
-   return [X(p.x),Y(p.y),X(q.x),Y(q.y)];
-  }):[];
-  out+=`<g clip-path="url(#${id}-clip)"><path data-edit="curve:${ci}" d="${d}" fill="none" stroke="#151515" stroke-width="${s.lineWidth}" stroke-linejoin="round" stroke-linecap="round" ${dashArray?`stroke-dasharray="${dashArray}"`:''}/>`;
-  if(c.dots)out+=pts.map(([x,y])=>`<circle cx="${n(x)}" cy="${n(y)}" r="${s.lineWidth*2}" fill="#151515"/>`).join('');
-  if(c.arrows)for(const [x,y,xx,yy] of arrowSegments)out+=line(x,y,xx,yy,`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);
+  if(c.arrows&&plot==='line')for(const segment of arrowGeometry){const p=segmentPoint(segment,.48),q=segmentPoint(segment,.56);out+=line(X(p.x),Y(p.y),X(q.x),Y(q.y),`stroke="#151515" stroke-width="${s.lineWidth}" marker-end="url(#${id}-arrow)"`);}
   out+='</g>';
  }
- out+=g.labels.map((l,i)=>((l.yAxis??'left')==='left'&&l.text==='0'&&l.x===0&&l.y===0&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0)?'':text(X(l.x)+l.dx,YFor(l.y,l.yAxis)+l.dy,l.text,'middle',s.fontSize,`label:${i}`)).join('');return out+'</g></svg>';
+ out+=g.labels.map((l,i)=>!xMappingFor(l.xAxis).visible(l.x)||!yMappingFor(l.yAxis).visible(l.y)||((l.yAxis??'left')==='left'&&(l.xAxis??'bottom')==='bottom'&&l.text==='0'&&l.x===0&&l.y===0&&showZero)?'':text(XFor(l.x,l.xAxis)+l.dx,YFor(l.y,l.yAxis)+l.dy,l.text,'middle',s.fontSize,`label:${i}`)).join('');return out+'</g></svg>';
 }
 export function parseCoordinates(input:string,strict=false):{x:number;y:number}[]{
  const scalar='[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?';

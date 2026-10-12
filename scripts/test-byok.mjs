@@ -1,18 +1,15 @@
+import {compileTestModules} from './test-module-loader.mjs';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
-import ts from 'typescript';
 
 const root=process.cwd();
 await mkdir(path.join(root,'outputs'),{recursive:true});
 const temp=await mkdtemp(path.join(root,'outputs','byok-test-'));
 const originalFetch=globalThis.fetch;
 try{
- for(const name of ['graph','openai-graph']){
-  const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
-  await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
- }
+ await compileTestModules(temp,['graph','openai-graph']);
  const {generateOpenAIGraph}=await import(pathToFileURL(path.join(temp,'openai-graph.mjs')));
  const {presets}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const legacyFixture=presets[0].graph;
@@ -35,10 +32,19 @@ try{
   assert.ok(schema.required.includes('rightYAxis'));
   const [rightAxis,noRightAxis]=schema.properties.rightYAxis.anyOf;
   assert.deepEqual(noRightAxis,{type:'null'});
-  assert.deepEqual(rightAxis.required,['label','min','max','ticks']);
+  assert.deepEqual(rightAxis.required,['label','min','max','ticks','scale','reversed','break']);
+  assert.deepEqual(schema.properties.topXAxis,schema.properties.rightYAxis);
+  for(const key of ['xScale','yScale'])assert.deepEqual(schema.properties[key].enum,['linear','log']);
+  for(const key of ['xReversed','yReversed'])assert.deepEqual(schema.properties[key],{type:'boolean'});
+  assert.deepEqual(schema.properties.xAxisPosition.enum,['bottom','top']);
+  for(const key of ['xBreak','yBreak'])assert.deepEqual(schema.properties[key].anyOf[0].required,['from','to']);
+  const strictObjects=node=>{if(!node||typeof node!=='object')return;if(node.type==='object'){assert.equal(node.additionalProperties,false);assert.deepEqual(node.required,Object.keys(node.properties));}for(const nested of Object.values(node))if(Array.isArray(nested))nested.forEach(strictObjects);else if(nested&&typeof nested==='object')strictObjects(nested);};
+  strictObjects(schema);
   assert.equal(rightAxis.additionalProperties,false);
   for(const element of ['curves','guides','labels','shadings']){
    assert.ok(schema.properties[element].items.required.includes('yAxis'));
+   assert.ok(schema.properties[element].items.required.includes('xAxis'));
+   assert.deepEqual(schema.properties[element].items.properties.xAxis.enum,['bottom','top']);
    assert.deepEqual(schema.properties[element].items.properties.yAxis.enum,['left','right']);
   }
   assert.ok(body.instructions.includes('do not manually normalize them into left-axis coordinates'));
@@ -46,6 +52,13 @@ try{
   assert.equal(curve.additionalProperties,false);
   assert.deepEqual(curve.required,Object.keys(curve.properties));
   assert.ok(curve.required.includes('lineStyle'));
+  assert.deepEqual(curve.properties.plot.enum,['line','scatter','bar','histogram']);
+  assert.deepEqual(curve.properties.marker.enum,['circle','square','triangle','cross']);
+  assert.deepEqual(curve.properties.barWidth.anyOf,[{type:'number'},{type:'null'}]);
+  assert.deepEqual(curve.properties.barBaseline.anyOf,[{type:'number'},{type:'null'}]);
+  assert.ok(body.instructions.includes('Never force zero into a logarithmic range'));
+  assert.ok(body.instructions.includes('Store original positive values on a log axis'));
+  assert.ok(!body.instructions.includes('include 0 in both axis ranges'));
   assert.deepEqual(curve.properties.lineStyle,{type:'string',enum:lineStyles});
   assert.ok(curve.required.includes('distribution'));
   const [gamma,normal,ordinary]=curve.properties.distribution.anyOf;
@@ -129,6 +142,28 @@ try{
  ]){
   globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(invalid)}]}]});
   await assert.rejects(()=>generateOpenAIGraph({prompt:'이중 축 그래프'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
+ }
+ // A strict-response fixture exercises secondary logarithmic coordinates,
+ // reversed depth, a broken axis, chart modes and nullable automatic defaults.
+ const advancedFixture={...legacyFixture,xMin:1,xMax:100,xScale:'log',yMin:0,yMax:10,yScale:'linear',xReversed:false,yReversed:true,xAxisPosition:'bottom',xBreak:{from:3,to:6},yBreak:null,equalAxes:false,
+  xTicks:[{value:1,label:'1'},{value:10,label:'10'},{value:100,label:'100'}],yTicks:[],
+  topXAxis:{label:'온도',min:100,max:1000,ticks:[{value:100,label:'100'},{value:1000,label:'1000'}],scale:'log',reversed:true,break:null},
+  rightYAxis:{label:'밀도',min:1,max:100,ticks:[{value:1,label:'1'},{value:100,label:'100'}],scale:'log',reversed:false,break:{from:3,to:6}},
+  curves:[{...legacyFixture.curves[0],name:'관측',xAxis:'top',yAxis:'right',plot:'scatter',marker:'triangle',barWidth:null,barBaseline:null,smooth:false,distribution:null,conic:null,points:[{x:100,y:1},{x:300,y:10},{x:1000,y:100}]}],
+  guides:[{x1:100,y1:10,x2:300,y2:10,xAxis:'top',yAxis:'right'}],labels:[{x:300,y:10,text:'A',dx:5,dy:-10,xAxis:'top',yAxis:'right'}],
+  shadings:[{curve:0,otherCurve:0,mode:'rectangle',baseline:0,xStart:100,xEnd:300,yStart:10,yEnd:30,xAxis:'top',yAxis:'right',pattern:'solid',opacity:.15}]};
+ globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(advancedFixture)}]}]});
+ const advancedResult=await generateOpenAIGraph({prompt:'상단 로그축과 오른쪽 축에 산점도를 그려 줘'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.equal(advancedResult.xScale,'log');assert.equal(advancedResult.yReversed,true);assert.equal(advancedResult.topXAxis.scale,'log');
+ assert.equal(advancedResult.curves[0].plot,'scatter');assert.equal(advancedResult.curves[0].marker,'triangle');assert.equal(advancedResult.curves[0].xAxis,'top');
+ assert.deepEqual(advancedResult.curves[0].points,advancedFixture.curves[0].points);
+ assert.equal(Object.hasOwn(advancedResult,'yBreak'),false);assert.equal(Object.hasOwn(advancedResult.topXAxis,'break'),false);
+ assert.equal(Object.hasOwn(advancedResult.curves[0],'barWidth'),false);assert.equal(Object.hasOwn(advancedResult.curves[0],'barBaseline'),false);
+ globalThis.fetch=async(_url,options)=>{const body=JSON.parse(options.body),current=JSON.parse(body.input[0].content[1].text.replace(/^Current graph data: /,''));assert.deepEqual(current,advancedResult);return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(advancedFixture)}]}]});};
+ assert.deepEqual(await generateOpenAIGraph({prompt:'같은 축과 표식을 유지해 줘',current:advancedResult},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),advancedResult);
+ for(const invalid of [{...advancedFixture,xMin:0},{...advancedFixture,topXAxis:null},{...advancedFixture,xBreak:{from:3,to:200}},{...advancedFixture,curves:[{...advancedFixture.curves[0],points:[{x:0,y:10}]}]},{...advancedFixture,curves:[{...advancedFixture.curves[0],plot:'bar',barBaseline:0}]}]){
+  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(invalid)}]}]});
+  await assert.rejects(()=>generateOpenAIGraph({prompt:'새 축 그래프'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  }
  const gamma={kind:'gamma',origin:1,peak:3,height:2,power:4,baseline:.5,end:9};
  const gammaCurve={...fixture.curves[0],distribution:gamma,smooth:false,dots:false,arrows:false,points:[{x:1,y:.5},{x:3,y:2.5},{x:9,y:.5}]};
@@ -268,5 +303,5 @@ try{
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({...fixture,curves:[{...fixture.curves[0],lineStyle:'unsupported'}]})}]}]});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
- console.log('PASS: independent dual-axis response/refinement, missing-axis/range/scaling/shading validation, BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, circle/ellipse metadata and canonical closed samples, equal-axis refinement, conic bounds and family exclusion, gamma/normal metadata and canonical samples, Gaussian shading and peak-guide refinement, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
+ console.log('PASS: strict logarithmic/reversed/broken/top-axis chart schemas and response/refinement, optional-null normalization, positive-domain rejection; independent dual-axis response/refinement, missing-axis/range/scaling/shading validation, BYOK request isolation, input validation, image/refine shading and five line styles, strict schemas, circle/ellipse metadata and canonical closed samples, equal-axis refinement, conic bounds and family exclusion, gamma/normal metadata and canonical samples, Gaussian shading and peak-guide refinement, independent rectangle bounds and validation, legacy graph request/response, 401 handling, graph validation');
 }finally{globalThis.fetch=originalFetch;await rm(temp,{recursive:true,force:true});}

@@ -38,9 +38,9 @@ export function RectangleShadeDraw({graph,style,snapStep,onCreate,onError}:Props
   try{onCreate(createRectangleShading(graph,current.start,end,'left'));}
   catch(error){onError(error instanceof Error?error.message:'대각선으로 드래그해 사각형의 두 모서리를 지정해 주세요.');}
  }
- const x=region?layout.X(Math.min(region.start.x,region.end.x)):0,y=region?layout.Y(Math.max(region.start.y,region.end.y)):0;
+ const x=region?Math.min(layout.X(region.start.x),layout.X(region.end.x)):0,y=region?Math.min(layout.Y(region.start.y),layout.Y(region.end.y)):0;
  return <svg ref={svg} className="graph-edit-overlay rectangle-draw-overlay" viewBox={`0 0 ${style.width} ${style.height}`} role="group" aria-label="사각형 음영 그리기" tabIndex={0} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={cancel}>
   <rect x={layout.L} y={layout.T} width={layout.R-layout.L} height={layout.B-layout.T} fill="transparent" className="rectangle-draw-surface" onPointerDown={start}/>
-  {region&&<rect x={x} y={y} width={Math.abs(region.end.x-region.start.x)*layout.dx} height={Math.abs(region.end.y-region.start.y)*layout.dy} className="rectangle-draw-region" pointerEvents="none"/>}
+  {region&&<rect x={x} y={y} width={Math.abs(layout.X(region.end.x)-layout.X(region.start.x))} height={Math.abs(layout.Y(region.end.y)-layout.Y(region.start.y))} className="rectangle-draw-region" pointerEvents="none"/>}
  </svg>;
 }

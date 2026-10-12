@@ -1,16 +1,13 @@
+import {compileTestModules} from './test-module-loader.mjs';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
-import ts from 'typescript';
 const root=process.cwd();
 await mkdir(path.join(root,'outputs'),{recursive:true});
 const temp=await mkdtemp(path.join(root,'outputs','dual-axis-test-'));
 try{
- for(const name of ['graph','graph-edit']){
-  const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
-  await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
- }
+ await compileTestModules(temp,['graph','graph-edit']);
  const {presets,graphSchema,graphLayout,renderGraph,shadingIssue,withDistribution,distributionPeakIndex,withConic,yAxisRange,defaultStyle}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const {movePoint,moveCurve,replaceCurve,createRectangleShading,adjustText,removeCurve}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  const approx=(a,b,tolerance=1e-9)=>assert.ok(Math.abs(a-b)<tolerance,`${a} ≈ ${b}`);

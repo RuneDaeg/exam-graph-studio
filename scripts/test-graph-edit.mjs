@@ -1,17 +1,14 @@
+import {compileTestModules} from './test-module-loader.mjs';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
-import ts from 'typescript';
 
 const root=process.cwd();
 await mkdir(path.join(root,'outputs'),{recursive:true});
 const temp=await mkdtemp(path.join(root,'outputs','graph-edit-test-'));
 try{
- for(const name of ['graph','graph-edit']){
-  const source=(await readFile(path.join(root,'lib',name+'.ts'),'utf8')).replace("from './graph'","from './graph.mjs'");
-  await writeFile(path.join(temp,name+'.mjs'),ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText);
- }
+ await compileTestModules(temp,['graph','graph-edit']);
  const {presets,graphSchema,renderGraph,graphLayout,parseCoordinates,smoothConnectionIssue,pointOnCurve,nearestCurvePosition,shadingIssue,defaultStyle,curveLineStyle,lineDashArray,distributionValue,withDistribution,freeDistribution,distributionPeakIndex,withConic,freeConic,conicHandleIndices}=await import(pathToFileURL(path.join(temp,'graph.mjs')));
  const {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,removeCurve,createRectangleShading,updateDistribution,updateConic,replaceCurve}=await import(pathToFileURL(path.join(temp,'graph-edit.mjs')));
  assert.deepEqual(parseCoordinates('(1e-7, -2.5E+2), (+.5, 3.)',true),[{x:1e-7,y:-250},{x:.5,y:3}]);

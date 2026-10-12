@@ -1,18 +1,15 @@
+import {compileTestModules} from './test-module-loader.mjs';
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import ts from 'typescript';
 import katex from 'katex';
 
 const root = process.cwd();
 await mkdir(path.join(root, 'outputs'), { recursive: true });
 const temp = await mkdtemp(path.join(root, 'outputs', 'exam-library-test-'));
 try {
-  for (const name of ['graph', 'graph-edit', 'exam-presets', 'exam-physics', 'exam-chemistry', 'exam-biology', 'exam-earth', 'exam-integrated']) {
-    const source = (await readFile(path.join(root, 'lib', name + '.ts'), 'utf8')).replace(/from '(\.\/[^']+)'/g, "from '$1.mjs'");
-    await writeFile(path.join(temp, name + '.mjs'), ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText);
-  }
+  await compileTestModules(temp, ['graph', 'graph-edit', 'exam-presets']);
   const { examTemplates, scienceCourses, filterExamTemplates } = await import(pathToFileURL(path.join(temp, 'exam-presets.mjs')));
   const { graphSchema, renderGraph, yAxisRange, distributionPeakIndex, distributionValue, pointOnCurve } = await import(pathToFileURL(path.join(temp, 'graph.mjs')));
   const { movePoint } = await import(pathToFileURL(path.join(temp, 'graph-edit.mjs')));
