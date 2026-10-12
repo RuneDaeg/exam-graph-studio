@@ -12,7 +12,7 @@ import {CurvePointInsert} from '@/components/curve-point-insert';
 import {GraphShading} from '@/components/graph-shading';
 import {RectangleShadeDraw} from '@/components/rectangle-shade-draw';
 import {typesetSvg,typesetSvgCached} from '@/lib/math-svg';
-import {movePoint,moveCurve,moveLabel,adjustText,insertCurvePoint,replaceCurve,deleteGraphTarget,type EditTarget} from '@/lib/graph-edit';
+import {movePoint,moveCurve,moveLabel,moveAxisLabel,adjustText,insertCurvePoint,replaceCurve,deleteGraphTarget,type EditTarget} from '@/lib/graph-edit';
 
 type Box={id:string;x:number;y:number;width:number;height:number};
 type Path={index:number;d:string};
@@ -86,9 +86,9 @@ export function GraphPreview({graph,style,disabled,follow,onFollowChange,onCommi
  function svgPoint(e:{clientX:number;clientY:number}){const matrix=overlay.current?.getScreenCTM();return matrix?new DOMPoint(e.clientX,e.clientY).matrixTransform(matrix.inverse()):null;}
  function begin(e:PointerEvent<SVGElement>,target:EditTarget){
   if(disabled||!enabled||e.button!==0)return;e.preventDefault();e.stopPropagation();e.currentTarget.focus({preventScroll:true});setSelected(target);setError('');setDeletionNotice(null);
-  if(target.kind==='axis'||target.kind==='tick'||target.kind==='guide')return;
+  if(target.kind==='tick'||target.kind==='guide')return;
   const p=svgPoint(e);if(!p)return;overlay.current?.setPointerCapture(e.pointerId);
-  drag.current={target,inspected:selected,start:{x:p.x,y:p.y},graph,next:graph,pointer:e.pointerId,moved:false,box:target.kind==='label'?boxes.find(b=>b.id===keyOf(target)):undefined};
+  drag.current={target,inspected:selected,start:{x:p.x,y:p.y},graph,next:graph,pointer:e.pointerId,moved:false,box:target.kind==='label'||target.kind==='axis'?boxes.find(b=>b.id===keyOf(target)):undefined};
   setDragView({graph,inspected:selected});
  }
  function addPoint(curve:number,segment:number,t=.5){
@@ -108,16 +108,16 @@ export function GraphPreview({graph,style,disabled,follow,onFollowChange,onCommi
   try{
    if(t.kind==='point'){const c=d.graph.curves[t.curve],old=c.points[t.index],world=base.worldFor(base.XFor(old.x,c.xAxis)+dx,base.YFor(old.y,c.yAxis)+dy,c.yAxis,c.xAxis);next=movePoint(d.graph,t.curve,t.index,quantize(world.x),quantize(world.y),follow);}
    if(t.kind==='curve'){const c=d.graph.curves[t.curve],start=base.worldFor(d.start.x,d.start.y,c.yAxis,c.xAxis),end=base.worldFor(p.x,p.y,c.yAxis,c.xAxis);next=moveCurve(d.graph,t.curve,quantize(end.x-start.x),quantize(end.y-start.y),follow);}
-   if(t.kind==='label'){const b=d.box;const xx=b?Math.max(-b.x,Math.min(style.width-b.x-b.width,dx)):dx,yy=b?Math.max(-b.y,Math.min(style.height-b.y-b.height,dy)):dy;next=moveLabel(d.graph,t.index,rounded(xx),rounded(yy));}
+   if(t.kind==='label'||t.kind==='axis'){const b=d.box;const xx=b?Math.max(-b.x,Math.min(style.width-b.x-b.width,dx)):dx,yy=b?Math.max(-b.y,Math.min(style.height-b.y-b.height,dy)):dy;next=t.kind==='axis'?moveAxisLabel(d.graph,t.axis,rounded(xx),rounded(yy)):moveLabel(d.graph,t.index,rounded(xx),rounded(yy));}
    d.next=next;setDraft(next);
   }catch(e){setError(e instanceof Error?e.message:'이동할 수 없습니다.');}
  }
  function finish(e:PointerEvent<SVGSVGElement>){const d=drag.current;if(!d||d.pointer!==e.pointerId)return;drag.current=null;setDragView(null);setDraft(null);setSelected({...d.target});if(overlay.current?.hasPointerCapture(e.pointerId))overlay.current.releasePointerCapture(e.pointerId);if(d.moved&&JSON.stringify(d.graph)!==JSON.stringify(d.next))onCommit(d.next);}
  function nudge(e:KeyboardEvent<SVGElement>,t:EditTarget){
-  if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)||t.kind==='axis'||t.kind==='tick'||t.kind==='guide')return;
+  if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)||t.kind==='tick'||t.kind==='guide')return;
   e.preventDefault();const factor=e.shiftKey?10:1,x=(e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0)*factor,y=(e.key==='ArrowUp'?1:e.key==='ArrowDown'?-1:0)*factor;
   try{
-   if(t.kind==='label'){onCommit(moveLabel(graph,t.index,x,-y));setSelected(t);return;}
+   if(t.kind==='label'||t.kind==='axis'){onCommit(t.kind==='axis'?moveAxisLabel(graph,t.axis,x,-y):moveLabel(graph,t.index,x,-y));setSelected(t);return;}
    const c=graph.curves[t.curve],point=c.points[t.kind==='point'?t.index:0];
    const nextWorld=layout.worldFor(layout.XFor(point.x,c.xAxis)+x*(layout.R-layout.L)/100,layout.YFor(point.y,c.yAxis)-y*(layout.B-layout.T)/100,c.yAxis,c.xAxis);
    const snapUnit=snap&&Number(step)>0?Number(step):null;
@@ -150,7 +150,7 @@ export function GraphPreview({graph,style,disabled,follow,onFollowChange,onCommi
    <label><input type="checkbox" checked={snap} onChange={e=>setSnap(e.target.checked)}/>좌표 맞춤</label><input className="snap-step" type="number" min="0" step="any" value={step} disabled={!snap} aria-label="좌표 맞춤 간격" onChange={e=>setStep(e.target.value)}/>
    <label title="점이나 봉우리에 연결된 보조선과 문자가 함께 이동합니다."><input type="checkbox" checked={follow} onChange={e=>onFollowChange(e.target.checked)}/>보조선·문자 함께 이동</label>
   </div>
-  <p className="preview-help" role={addingPoint||drawingRectangle?'status':undefined}>{drawingRectangle?'왼쪽 세로축 기준으로 대각선 드래그해 사각형 영역을 그리세요. Esc로 취소 · 좌표 입력은 음영 편집의 사각형 영역을 사용하세요.':addingPoint?'점을 추가할 선 위를 클릭하세요. 기존 점 사이에 삽입됩니다. Esc로 취소 · 키보드는 선 선택 후 아래의 중간 점 추가를 사용하세요.':active?(conicControls?'원·타원은 네 방향 손잡이로 크기를, 선을 드래그해 중심을 바꿉니다. 선을 선택하면 중심과 반지름을 정확히 입력할 수 있습니다.':formulaControls?'봉우리를 드래그해 위치·높이를 바꾸세요. 선을 선택하면 분포 종류와 폭을 조절할 수 있습니다.':smoothControls?'점·선을 클릭하면 연결 방식을 바꿀 수 있습니다. 곡선의 조절점은 주변 구간도 매끄럽게 바꿉니다.':'점·선을 클릭해 직선 / 곡선을 선택하세요. 드래그로 이동 · 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
+  <p className="preview-help" role={addingPoint||drawingRectangle?'status':undefined}>{drawingRectangle?'왼쪽 세로축 기준으로 대각선 드래그해 사각형 영역을 그리세요. Esc로 취소 · 좌표 입력은 음영 편집의 사각형 영역을 사용하세요.':addingPoint?'점을 추가할 선 위를 클릭하세요. 기존 점 사이에 삽입됩니다. Esc로 취소 · 키보드는 선 선택 후 아래의 중간 점 추가를 사용하세요.':active?(conicControls?'원·타원은 네 방향 손잡이로 크기를, 선을 드래그해 중심을 바꿉니다. 선을 선택하면 중심과 반지름을 정확히 입력할 수 있습니다.':formulaControls?'봉우리를 드래그해 위치·높이를 바꾸세요. 선을 선택하면 분포 종류와 폭을 조절할 수 있습니다.':smoothControls?'점·선을 클릭하면 연결 방식을 바꿀 수 있습니다. 곡선의 조절점은 주변 구간도 매끄럽게 바꿉니다.':'점·선·문자·축 이름을 드래그로 이동 · 방향키로 미세 이동 · Esc로 드래그 취소'):'편집 표시를 숨긴 미리보기입니다.'}</p>
   {shadingOpen&&!disabled&&<GraphShading graph={graph} onChange={onCommit} initialCurve={selectedCurve??undefined} initialShadingIndex={initialShadingIndex} onClose={()=>setShadingOpen(false)}/>}
   <div className={'paper '+(style.transparent?'transparent-paper':'')} onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{e.preventDefault();if(!disabled&&e.dataTransfer.files[0])onDropImage(e.dataTransfer.files[0]);}}>
    <div className="graph-preview"><div ref={content} className="graph-art" dangerouslySetInnerHTML={{__html:display}}/>
@@ -167,7 +167,7 @@ export function GraphPreview({graph,style,disabled,follow,onFollowChange,onCommi
       const t:EditTarget={kind:'point',curve:ci,index:pi},isSelected=selected&&keyOf(selected)===keyOf(t);
       return <g key={c.distribution?`${ci}:distribution-peak`:`${ci}:${pi}`} tabIndex={0} role="button" aria-label={c.conic?`곡선 ${ci+1} ${["오른쪽","위쪽","왼쪽","아래쪽"][pi/4]} 반지름 조절`:c.distribution?`곡선 ${ci+1} 분포 봉우리 이동`:`곡선 ${ci+1}의 점 ${pi+1} 이동`} className={'point-handle '+(isSelected?'selected':'')} onPointerDown={e=>begin(e,t)} onClick={()=>setSelected(t)} onFocus={()=>setSelected(t)} onKeyDown={e=>nudge(e,t)}><circle cx={layout.XFor(p.x,c.xAxis)} cy={layout.YFor(p.y,c.yAxis)} r={Math.max(13,12/scale)} fill="transparent"/><circle cx={layout.XFor(p.x,c.xAxis)} cy={layout.YFor(p.y,c.yAxis)} r={(isSelected?6:4.5)/scale} className="visible-handle"/></g>;
      });})}
-     {!addingPoint&&boxes.map(b=>{const t=targetOf(b.id);return <rect key={b.id} x={b.x} y={b.y} width={b.width} height={b.height} rx={3} className={'text-hit '+(selected&&keyOf(selected)===b.id?'selected':'')} tabIndex={0} role="button" aria-label={t.kind==='axis'?`${t.axis==='x'?'가로':t.axis==='top'?'위쪽 가로':t.axis==='right'?'오른쪽 세로':'왼쪽 세로'}축 이름 편집`:t.kind==='tick'?`${t.axis==='x'?'가로':t.axis==='top'?'위쪽 가로':t.axis==='right'?'오른쪽 세로':'왼쪽 세로'}축 눈금 ${t.index+1} 편집`:`문자 ${t.kind==='label'?t.index+1:''} 이동·편집`} onPointerDown={e=>begin(e,t)} onClick={()=>setSelected(t)} onFocus={()=>setSelected(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelected(t);}else nudge(e,t);}}/>;})}
+     {!addingPoint&&boxes.map(b=>{const t=targetOf(b.id);return <rect key={b.id} x={b.x} y={b.y} width={b.width} height={b.height} rx={3} className={'text-hit '+(selected&&keyOf(selected)===b.id?'selected':'')} tabIndex={0} role="button" aria-label={t.kind==='axis'?`${t.axis==='x'?'가로':t.axis==='top'?'위쪽 가로':t.axis==='right'?'오른쪽 세로':'왼쪽 세로'}축 이름 이동·편집`:t.kind==='tick'?`${t.axis==='x'?'가로':t.axis==='top'?'위쪽 가로':t.axis==='right'?'오른쪽 세로':'왼쪽 세로'}축 눈금 ${t.index+1} 편집`:`문자 ${t.kind==='label'?t.index+1:''} 이동·편집`} onPointerDown={e=>begin(e,t)} onClick={()=>setSelected(t)} onFocus={()=>setSelected(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelected(t);}else nudge(e,t);}}/>;})}
     </svg>}
     {active&&drawingRectangle&&<RectangleShadeDraw graph={graph} style={style} snapStep={snap?Number(step):null} onError={setError} onCreate={shade=>{onCommit(graphSchema.parse({...graph,shadings:[...(graph.shadings??[]),shade]}));setDrawingRectangle(false);setInitialShadingIndex(graph.shadings?.length??0);setShadingOpen(true);setError('');}}/>}
    </div>
@@ -184,7 +184,7 @@ function SelectionEditor({graph,target,follow,onCommit,onInsert,onDelete,onDelet
  let savedText='',savedX='',savedY='';
  if(target.kind==='point'){const p=graph.curves[target.curve]?.points[target.index];if(p){savedX=String(p.x);savedY=String(p.y);}}
  if(target.kind==='label'){const l=graph.labels[target.index];if(l){savedText=l.text;savedX=String(l.dx);savedY=String(l.dy);}}
- if(target.kind==='axis')savedText=target.axis==='top'?graph.topXAxis?.label??'':target.axis==='right'?graph.rightYAxis?.label??'':graph[target.axis==='x'?'xLabel':'yLabel'];
+ if(target.kind==='axis'){savedText=target.axis==='top'?graph.topXAxis?.label??'':target.axis==='right'?graph.rightYAxis?.label??'':graph[target.axis==='x'?'xLabel':'yLabel'];const offset=graph.axisLabelOffsets?.[target.axis];savedX=String(offset?.dx??0);savedY=String(offset?.dy??0);}
  if(target.kind==='tick'){const tick=(target.axis==='top'?graph.topXAxis?.ticks:target.axis==='right'?graph.rightYAxis?.ticks:graph[target.axis==='x'?'xTicks':'yTicks'])?.[target.index];if(tick){savedText=tick.label;savedX=String(tick.value);}}
  if(target.kind==='curve')savedText=graph.curves[target.curve]?.name||'';
  const selectionKey=keyOf(target);
@@ -202,7 +202,7 @@ function SelectionEditor({graph,target,follow,onCommit,onInsert,onDelete,onDelet
   if(t.kind==='point')next=movePoint(graph,t.curve,t.index,number(x),number(y),follow);
   else if(t.kind==='label'){const old=graph.labels[t.index];next=moveLabel(adjustText(graph,t,text),t.index,number(x)-old.dx,number(y)-old.dy);}
   else if(t.kind==='tick')next=adjustText(graph,t,text,number(x));
-  else if(t.kind==='axis')next=adjustText(graph,t,text);
+  else if(t.kind==='axis'){const old=graph.axisLabelOffsets?.[t.axis];next=moveAxisLabel(adjustText(graph,t,text),t.axis,number(x)-(old?.dx??0),number(y)-(old?.dy??0));}
   else next={...graph,curves:graph.curves.map((c,i)=>i===t.curve?{...c,name:text}:c)};
   onCommit(graphSchema.parse(next));setError('');
   // Apply can clamp back to the existing value without changing saved fields.
@@ -230,11 +230,12 @@ function SelectionEditor({graph,target,follow,onCommit,onInsert,onDelete,onDelet
   try{onCommit(replaceCurve(graph,curveIndex,curve,follow));setError('');}catch(e){setError(e instanceof Error?e.message:'그래프 종류를 확인해 주세요.');}
  }
 
- return <form className="preview-inspector" noValidate onKeyDown={onDeleteKey} onSubmit={e=>{e.preventDefault();apply();}}><div className="inspector-title"><strong>{title}</strong><div className="selection-actions"><button type="button" className="button selection-delete" onClick={onDelete} title="Delete / Backspace"><Trash2 size={14}/>{deleteName(graph,t)} 삭제</button><button type="button" className="icon-button" aria-label="선택 해제" onClick={onClose}><X size={14}/></button></div></div><p className="selection-delete-hint">{isModelHandle(graph,t)?'분포 봉우리·원/타원 손잡이를 삭제하면 해당 그래프 전체가 삭제됩니다. ':'선택한 항목은 Delete 또는 Backspace로 삭제할 수 있습니다. '}{t.kind==='axis'?'축은 유지하고 이름만 지웁니다. ':''}실행 취소로 복원할 수 있습니다.</p>{t.kind!=='guide'&&!((connection?.distribution||connection?.conic)&&t.kind==='point')&&<div className="inspector-fields">
+ return <form className="preview-inspector" noValidate onKeyDown={onDeleteKey} onSubmit={e=>{e.preventDefault();apply();}}><div className="inspector-title"><strong>{title}</strong><div className="selection-actions"><button type="button" className="button selection-delete" onClick={onDelete} title="Delete / Backspace"><Trash2 size={14}/>{deleteName(graph,t)} 삭제</button><button type="button" className="icon-button" aria-label="선택 해제" onClick={onClose}><X size={14}/></button></div></div><p className="selection-delete-hint">{isModelHandle(graph,t)?'분포 봉우리·원/타원 손잡이를 삭제하면 해당 그래프 전체가 삭제됩니다. ':'선택한 항목은 Delete 또는 Backspace로 삭제할 수 있습니다. '}{t.kind==='axis'?'축 이름은 드래그·방향키로 옮길 수 있습니다. 삭제하면 축은 유지하고 이름만 지웁니다. ':''}실행 취소로 복원할 수 있습니다.</p>{t.kind!=='guide'&&!((connection?.distribution||connection?.conic)&&t.kind==='point')&&<div className="inspector-fields">
   {t.kind!=='point'&&<label className="inspector-text">{t.kind==='curve'?'선 이름':'표시할 문자'}<textarea rows={1} aria-label="선택한 문자" value={text} maxLength={t.kind==='curve'?40:t.kind==='label'?120:80} onChange={e=>setText(e.target.value)}/></label>}
-  {(t.kind==='point'||t.kind==='label'||t.kind==='tick')&&<label>{t.kind==='label'?'가로 이동(px)':t.kind==='tick'?'눈금 좌표':'x 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 x 좌표':t.kind==='label'?'문자 가로 이동':'눈금 좌표'} value={x} onChange={e=>setX(e.target.value)}/></label>}
-  {(t.kind==='point'||t.kind==='label')&&<label>{t.kind==='label'?'세로 이동(px)':'y 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 y 좌표':'문자 세로 이동'} value={y} onChange={e=>setY(e.target.value)}/></label>}
+  {(t.kind==='point'||t.kind==='label'||t.kind==='axis'||t.kind==='tick')&&<label>{t.kind==='label'||t.kind==='axis'?'가로 이동(px)':t.kind==='tick'?'눈금 좌표':'x 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 x 좌표':t.kind==='axis'?'축 이름 가로 이동':t.kind==='label'?'문자 가로 이동':'눈금 좌표'} value={x} onChange={e=>setX(e.target.value)}/></label>}
+  {(t.kind==='point'||t.kind==='label'||t.kind==='axis')&&<label>{t.kind==='label'||t.kind==='axis'?'세로 이동(px)':'y 좌표'}<input type="number" step="any" aria-label={t.kind==='point'?'선택한 점 y 좌표':t.kind==='axis'?'축 이름 세로 이동':'문자 세로 이동'} value={y} onChange={e=>setY(e.target.value)}/></label>}
   <button className="button primary" type="submit">적용</button>
+  {t.kind==='axis'&&<button className="button" type="button" onClick={()=>{try{const old=graph.axisLabelOffsets?.[t.axis];onCommit(moveAxisLabel(graph,t.axis,-(old?.dx??0),-(old?.dy??0)));setX('0');setY('0');setError('');}catch(e){setError(e instanceof Error?e.message:'위치를 초기화하지 못했습니다.');}}}>위치 초기화</button>}
  </div>}{(connection||t.kind==='label')&&<label className="axis-assignment">기준 세로축<select aria-label="선택한 요소의 기준 세로축" value={connection?.yAxis??(t.kind==='label'?graph.labels[t.index].yAxis:undefined)??'left'} onChange={e=>changeAxis(e.target.value as YAxis)}><option value="left">왼쪽 세로축</option><option value="right" disabled={!graph.rightYAxis}>오른쪽 세로축{!graph.rightYAxis?' (축·눈금에서 추가)':''}</option></select>{graph.rightYAxis&&<span>좌표값은 유지하고 선택한 축의 눈금으로 표시합니다.</span>}</label>}{graph.topXAxis&&(connection||t.kind==='label')&&<label className="axis-assignment">기준 가로축<select aria-label="선택한 요소의 기준 가로축" value={connection?.xAxis??(t.kind==='label'?graph.labels[t.index].xAxis:undefined)??'bottom'} onChange={e=>changeXAxis(e.target.value as XAxis)}><option value="bottom">기본 가로축</option><option value="top">위쪽 보조 가로축</option></select></label>}{connection&&<CurvePlotControls graph={graph} curve={connection} onChange={changePlot}/>}{connection&&(connection.plot??'line')==='line'&&!connection.distribution&&!connection.conic&&<CurveConnection points={connection.points} smooth={connection.smooth} onChange={smooth=>onCommit({...graph,curves:graph.curves.map((c,i)=>i===curveIndex?{...c,smooth}:c)})}/>}
  {connection&&(connection.plot??'line')==='line'&&!connection.conic&&curveIndex!==null&&<DistributionControls key={`distribution-${curveIndex}`} curve={connection} onChange={curve=>onCommit(replaceCurve(graph,curveIndex,curve,follow))}/>}
  {connection&&(connection.plot??'line')==='line'&&!connection.distribution&&curveIndex!==null&&<ConicControls key={`conic-${curveIndex}`} curve={connection} onChange={curve=>onCommit(replaceCurve({...graph,...((curve.conic&&!connection.conic||connection.conic&&graph.equalAxes===undefined)?{equalAxes:!graph.rightYAxis&&!graph.topXAxis&&graph.xScale!=='log'&&graph.yScale!=='log'&&!graph.xBreak&&!graph.yBreak}:{})},curveIndex,curve,follow))}/> }

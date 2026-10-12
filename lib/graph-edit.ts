@@ -1,11 +1,11 @@
-import {graphSchema, pointOnCurve, shadingIssue, withDistribution, distributionPeakIndex, withConic, conicHandleIndices, yAxisRange, xAxisRange, type XAxis, type YAxis, type Conic, type Distribution, type Graph, type Shading} from './graph';
+import {graphSchema, pointOnCurve, shadingIssue, withDistribution, distributionPeakIndex, withConic, conicHandleIndices, yAxisRange, xAxisRange, type XAxis, type YAxis, type AxisLabelAxis, type Conic, type Distribution, type Graph, type Shading} from './graph';
 
 export type EditTarget =
  | {kind:'point';curve:number;index:number}
  | {kind:'curve';curve:number}
  | {kind:'label';index:number}
  | {kind:'guide';index:number}
- | {kind:'axis';axis:'x'|'y'|'right'|'top'}
+ | {kind:'axis';axis:AxisLabelAxis}
  | {kind:'tick';axis:'x'|'y'|'right'|'top';index:number};
 
 type Point = Graph['curves'][number]['points'][number];
@@ -268,6 +268,27 @@ export function moveLabel(graph:Graph,index:number,dxPixels:number,dyPixels:numb
  const source=item(graph.labels,index);
  const next={...source,dx:clamp(source.dx+dxPixels,-1e6,1e6),dy:clamp(source.dy+dyPixels,-1e6,1e6)};
  return graphSchema.parse({...graph,labels:graph.labels.map((label,i)=>i===index?next:label)});
+}
+
+/** Move only the axis title in SVG pixels, independently of data coordinates. */
+export function moveAxisLabel(graph:Graph,axis:AxisLabelAxis,dxPixels:number,dyPixels:number):Graph{
+ finite(dxPixels,dyPixels);
+ if(axis==='top'&&!graph.topXAxis)throw Error('위쪽 가로축을 먼저 켜 주세요.');
+ if(axis==='right'&&!graph.rightYAxis)throw Error('오른쪽 세로축을 먼저 켜 주세요.');
+ const source=graph.axisLabelOffsets?.[axis]??{dx:0,dy:0};
+ const offset={dx:source.dx+dxPixels,dy:source.dy+dyPixels};
+ finite(offset.dx,offset.dy);
+ return graphSchema.parse({...graph,axisLabelOffsets:{...graph.axisLabelOffsets,[axis]:offset}});
+}
+
+/** Axis title wording and page placement do not invalidate scientific models. */
+export function isAxisLabelOnlyEdit(previous:Graph,next:Graph):boolean{
+ const content=(graph:Graph)=>graphSchema.parse({
+  ...graph,xLabel:'',yLabel:'',axisLabelOffsets:undefined,
+  rightYAxis:graph.rightYAxis?{...graph.rightYAxis,label:''}:graph.rightYAxis,
+  topXAxis:graph.topXAxis?{...graph.topXAxis,label:''}:graph.topXAxis,
+ });
+ return JSON.stringify(content(previous))===JSON.stringify(content(next));
 }
 
 export function adjustText(graph:Graph,target:EditTarget,text:string,value?:number):Graph{

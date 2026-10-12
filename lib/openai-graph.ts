@@ -80,5 +80,6 @@ export async function generateOpenAIGraph(input:GraphInput,apiKey:string,signal:
  let value:unknown;try{value=JSON.parse(output);}catch{throw Error('그래프 응답 형식이 올바르지 않습니다. 다시 시도해 주세요.');}
  const graph=graphSchema.safeParse(normalizeResponse(value));
  if(!graph.success)throw Error('그래프 구조가 유효하지 않습니다. 좌표나 축 조건을 명확히 적어 다시 시도해 주세요.');
- return graph.data;
+ // Axis title offsets are manual page layout, outside the generated data schema.
+ return parsed.data.current?.axisLabelOffsets?{...graph.data,axisLabelOffsets:structuredClone(parsed.data.current.axisLabelOffsets)}:graph.data;
 }

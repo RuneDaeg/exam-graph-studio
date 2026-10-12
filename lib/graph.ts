@@ -117,6 +117,8 @@ export type XAxis=z.infer<typeof xAxis>;
 const secondaryAxis=z.object({label:z.string().max(80),min:num,max:num,ticks:z.array(tick).max(30),scale:scaleKind.optional(),reversed:z.boolean().optional(),break:axisBreak.optional()});
 const yAxis = z.enum(['left','right']);
 export type YAxis = z.infer<typeof yAxis>;
+export type AxisLabelAxis = 'x'|'y'|'right'|'top';
+const axisLabelOffset=z.object({dx:z.number().finite(),dy:z.number().finite()});
 const lineStyle = z.enum(['solid','dashed','dotted','dash-dot','dash-dot-dot']);
 const shading = z.object({xAxis:xAxis.optional(),yAxis:yAxis.optional(),curve:z.number().int().min(0).max(11),mode:z.enum(['baseline','between','closed','rectangle']),otherCurve:z.number().int().min(0).max(11).optional(),baseline:num,xStart:num,xEnd:num,yStart:num.optional(),yEnd:num.optional(),pattern:z.enum(['solid','hatch']),opacity:z.number().finite().min(.05).max(.6)}).superRefine((shade,ctx)=>{
  if(shade.mode!=='rectangle')return;
@@ -130,6 +132,7 @@ const curveSchema=z.object({xAxis:xAxis.optional(),yAxis:yAxis.optional(),plot:z
 export const graphSchema = z.object({
  scienceModel:scienceModelSchema.optional(),
  title:z.string().max(120), xLabel:z.string().max(80), yLabel:z.string().max(80),
+ axisLabelOffsets:z.object({x:axisLabelOffset.optional(),y:axisLabelOffset.optional(),right:axisLabelOffset.optional(),top:axisLabelOffset.optional()}).optional(),
  xMin:num,xMax:num,yMin:num,yMax:num,equalAxes:z.boolean().optional(),
  xScale:scaleKind.optional(),yScale:scaleKind.optional(),xReversed:z.boolean().optional(),yReversed:z.boolean().optional(),xAxisPosition:z.enum(['bottom','top']).optional(),xBreak:axisBreak.optional(),yBreak:axisBreak.optional(),topXAxis:secondaryAxis.nullable().optional(),
  xTicks:z.array(tick).max(30),yTicks:z.array(tick).max(30),
@@ -410,7 +413,7 @@ export const graphFontFamilies:Record<Style['font'],string>={
  sans:"'Arial', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif",
  dotum:"'Dotum', '돋움', 'AppleGothic', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif",
 };
-export const defaultStyle:Style={lineWidth:2.5,fontSize:23,guides:true,arrows:true,transparent:false,width:760,height:540,font:'serif'};
+export const defaultStyle:Style={lineWidth:2.5,fontSize:23,guides:true,arrows:true,transparent:false,width:760,height:540,font:'dotum'};
 const curve=(name:string,pts:number[][],opts:Partial<Graph['curves'][number]>={}):Graph['curves'][number]=>({name,points:pts.map(([x,y])=>({x,y})),dashed:false,smooth:false,arrows:false,dots:false,...opts});
 const ticks=(values:number[],labels?:string[])=>values.map((value,i)=>({value,label:labels?.[i]??String(value)}));
 const guide=(x1:number,y1:number,x2:number,y2:number)=>({x1,y1,x2,y2});
@@ -501,8 +504,12 @@ export function nearestMappedCurvePosition(curve:Curve,point:Point,X:(x:number)=
 }
 export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  const layout=graphLayout(g,s),{w,h,L,R,T,B,X,Y,XFor,YFor,xMappingFor,yMappingFor,zx,zy,ox,oy}=layout;
- const n=(x:number)=>Number.isFinite(x)?Math.round(x*100)/100:0;
+ const n=(x:number)=>Number.isFinite(x)?(Math.abs(x)>Number.MAX_VALUE/100?x:Math.round(x*100)/100):0;
  const text=(x:number,y:number,t:string,anchor='middle',size=s.fontSize,edit='')=>`<text ${edit?`data-edit="${edit}"`:''} data-label="${esc(t).replace(/\n/g,'&#10;')}" x="${n(x)}" y="${n(y)}" text-anchor="${anchor}" font-size="${size}" fill="#151515">${t.split('\n').map((line,i)=>`<tspan x="${n(x)}" dy="${i?1.2:0}em">${rich(line)}</tspan>`).join('')}</text>`;
+ const axisText=(axis:AxisLabelAxis,x:number,y:number,t:string,anchor:string)=>{
+  const offset=g.axisLabelOffsets?.[axis];
+  return text(x+(offset?.dx??0),y+(offset?.dy??0),t,anchor,s.fontSize,`axis:${axis}`);
+ };
  const line=(x1:number,y1:number,x2:number,y2:number,extra='')=>`<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" ${extra}/>`;
  const a=s.arrows?`marker-end="url(#${id}-arrow)"`:'';
  const axisTitleY=(label:string)=>T-25-(g.rightYAxis?(label.split('\n').length-1)*s.fontSize*1.2:0);
@@ -575,17 +582,17 @@ export function renderGraph(g:Graph,s:Style=defaultStyle,id='plot'){
  };
  out+=axisLine('bottom',oy)+axisLine('left',ox);
  const top=g.xAxisPosition==='top',xTickY=top?oy-14:oy+31;
- out+=text(R+20,top?oy-46:oy+(g.rightYAxis?31+1.5*s.fontSize:43),g.xLabel,'end',s.fontSize,'axis:x')+text(ox-17,axisTitleY(g.yLabel),g.yLabel,'end',s.fontSize,'axis:y');
+ out+=axisText('x',R+20,top?oy-46:oy+(g.rightYAxis?31+1.5*s.fontSize:43),g.xLabel,'end')+axisText('y',ox-17,axisTitleY(g.yLabel),g.yLabel,'end');
  const showZero=g.xScale!=='log'&&g.yScale!=='log'&&!g.xReversed&&!g.yReversed&&!top&&g.xMin<=0&&g.xMax>=0&&g.yMin<=0&&g.yMax>=0&&xMappingFor().visible(0)&&yMappingFor().visible(0);
  if(showZero)out+=text(X(0)-15,oy+27,'0');
  g.xTicks.forEach((t,i)=>{if(!xMappingFor().contains(t.value)||(showZero&&(g.rightYAxis?t.value===0&&g.yMin<=0&&g.yMax>=0:t.value===zx)))return;out+=line(X(t.value),oy-4,X(t.value),oy+4,`stroke="#151515" stroke-width="1"`)+text(X(t.value),xTickY,t.label,'middle',s.fontSize,`tick:x:${i}`);});
  g.yTicks.forEach((t,i)=>{if(!yMappingFor().contains(t.value)||(showZero&&(g.rightYAxis?t.value===0&&g.xMin===0:t.value===zy)))return;out+=text(ox-12,Y(t.value)+s.fontSize*.33,t.label,'end',s.fontSize,`tick:y:${i}`);});
  if(g.rightYAxis){
-  const right=g.rightYAxis;out+=axisLine('right',R)+text(R+17,axisTitleY(right.label),right.label,'start',s.fontSize,'axis:right');
+  const right=g.rightYAxis;out+=axisLine('right',R)+axisText('right',R+17,axisTitleY(right.label),right.label,'start');
   right.ticks.forEach((tick,i)=>{if(!yMappingFor('right').contains(tick.value))return;const y=YFor(tick.value,'right');out+=line(R-4,y,R+4,y,`stroke="#151515" stroke-width="1"`)+text(R+32,y+s.fontSize*.33,tick.label,'start',s.fontSize,`tick:right:${i}`);});
  }
  if(g.topXAxis){
-  out+=axisLine('top',T)+text(R,T-47,g.topXAxis.label,'end',s.fontSize,'axis:top');
+  out+=axisLine('top',T)+axisText('top',R,T-47,g.topXAxis.label,'end');
   g.topXAxis.ticks.forEach((tick,i)=>{if(!xMappingFor('top').contains(tick.value))return;const x=XFor(tick.value,'top');out+=line(x,T-4,x,T+4,`stroke="#151515" stroke-width="1"`)+text(x,T-13,tick.label,'middle',s.fontSize,`tick:top:${i}`);});
  }
  const marker=(x:number,y:number,kind:Curve['marker'])=>{

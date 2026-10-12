@@ -297,6 +297,14 @@ try{
   globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(invalidRectangle)}]}]});
   await assert.rejects(()=>generateOpenAIGraph({prompt:'사각형 음영'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/구조/);
  }
+ // Manual axis-title placement survives AI refinement but is not inherited by new graphs.
+ const positioned={...legacyFixture,axisLabelOffsets:{x:{dx:-25,dy:7},y:{dx:14,dy:22}}};
+ globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:JSON.stringify(legacyFixture)}]}]});
+ const refinedPosition=await generateOpenAIGraph({prompt:'곡선을 수정해 줘',current:positioned},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.deepEqual(refinedPosition.axisLabelOffsets,positioned.axisLabelOffsets);
+ assert.notEqual(refinedPosition.axisLabelOffsets,positioned.axisLabelOffsets);
+ const freshPosition=await generateOpenAIGraph({prompt:'새 그래프를 그려 줘'},'TEST_ONLY_NOT_A_KEY',new AbortController().signal);
+ assert.equal(freshPosition.axisLabelOffsets,undefined);
  globalThis.fetch=async()=>Response.json({error:{code:'invalid_api_key'}},{status:401});
  await assert.rejects(()=>generateOpenAIGraph(input,'TEST_ONLY_NOT_A_KEY',new AbortController().signal),/API 키/);
  globalThis.fetch=async()=>Response.json({output:[{content:[{type:'output_text',text:'{"unexpected":true}'}]}]});

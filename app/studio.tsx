@@ -14,6 +14,7 @@ import {ApiKeyDialog} from '@/components/api-key-dialog';
 import {StudioFooter} from '@/components/studio-footer';
 import {GraphLibrary} from '@/components/graph-library';
 import {generateOpenAIGraph} from '@/lib/openai-graph';
+import {isAxisLabelOnlyEdit} from '@/lib/graph-edit';
 import {typesetSvg} from '@/lib/math-svg';
 import {examTemplates} from '@/lib/exam-presets';
 import {presets,renderGraph,defaultStyle,fromCoordinates,graphSchema,type Style,type Graph} from '@/lib/graph';
@@ -35,7 +36,7 @@ export default function Home(){
  const svg=useMemo(()=>renderGraph(graph,style),[graph,style]);
  useEffect(()=>{let active=true;Promise.all(thumbnailSvgs.map(s=>typesetSvg(s))).then(rs=>{if(active)setThumbs(rs.map(r=>r.svg));});return()=>{active=false;};},[]);
  const commit=useCallback((next:Graph)=>{const previous=graphRef.current;graphRef.current=next;setHistory(h=>[...h.slice(-19),previous]);setFuture([]);setGraph(next);setError('');},[]);
- const commitFree=useCallback((next:Graph)=>{if(next.scienceModel){const {scienceModel,...free}=next;void scienceModel;commit({...free,note:[next.note,'직접 편집한 그래프입니다. 공식의 연동 조건은 다시 확인해 주세요.'].filter(Boolean).join(' ').slice(0,1000)});}else commit(next);},[commit]);
+ const commitFree=useCallback((next:Graph)=>{if(next.scienceModel&&!isAxisLabelOnlyEdit(graphRef.current,next)){const {scienceModel,...free}=next;void scienceModel;commit({...free,note:[next.note,'직접 편집한 그래프입니다. 공식의 연동 조건은 다시 확인해 주세요.'].filter(Boolean).join(' ').slice(0,1000)});}else commit(next);},[commit]);
  useEffect(()=>{const clear=()=>{apiKey.current='';request.current?.abort('cancel');setReady(false);};window.addEventListener('pagehide',clear);return()=>{window.removeEventListener('pagehide',clear);apiKey.current='';request.current?.abort();};},[]);
  useEffect(()=>{const context=(document as Document&{modelContext?:WebContext}).modelContext;if(!context?.registerTool)return;const lifecycle=new AbortController();try{Promise.resolve(context.registerTool({name:'set_exam_graph',description:'Validate and replace the visible editable exam graph using structured graph coordinates, labels, curves and guide lines.',inputSchema:{type:'object',properties:{graph:{type:'object'}},required:['graph'],additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:false},execute(input){const parsed=graphSchema.parse((input as {graph:unknown}).graph);flushSync(()=>commit(parsed));return {title:parsed.title,curves:parsed.curves.length};}},{signal:lifecycle.signal})).catch(()=>{});Promise.resolve(context.registerTool({name:'read_exam_graph',description:'Read the currently visible exam graph data.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:true},execute(){return graphRef.current;}},{signal:lifecycle.signal})).catch(()=>{});}catch{}return()=>lifecycle.abort();},[commit]);
  async function generate(){

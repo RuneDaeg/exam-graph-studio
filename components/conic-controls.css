@@ -13,5 +13,6 @@
 .conic-actions .button{font-size:11px;min-height:34px;padding:7px 10px}
 .conic-error{font-size:11px;line-height:1.6;color:#9a3939;margin:10px 0 0}
 .equal-axes-control{display:flex;align-items:center;gap:8px;font-size:13px;margin:16px 0 6px}
-.equal-axes-control input{accent-color:var(--primary)}
+.equal-axes-control input[type=checkbox]{width:14px;height:14px;flex:0 0 14px;margin:0;padding:0;accent-color:var(--primary)}
+.equal-axes-control input[type=checkbox]:focus-visible{outline:2px solid var(--focus-outline);outline-offset:2px}
 @media(max-width:480px){.conic-controls{padding:10px}.conic-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.conic-formula{font-size:11px}.conic-actions{justify-content:flex-start}}

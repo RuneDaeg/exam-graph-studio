@@ -23,7 +23,8 @@
     "test:axis-scales": "node scripts/test-axis-scales.mjs",
     "test:science-models": "node scripts/test-science-models.mjs",
     "test:textbook-library": "node scripts/test-textbook-library.mjs",
-    "test:textbook-interactions": "node scripts/test-textbook-interactions.mjs"
+    "test:textbook-interactions": "node scripts/test-textbook-interactions.mjs",
+    "test:axis-labels": "node scripts/test-axis-labels.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
